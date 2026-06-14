@@ -1,0 +1,53 @@
+# Draft-gated CI. Draft PRs are skipped; marking a PR "Ready for review"
+# (what the ship-ready skill does) triggers this run, which watch-ci then polls.
+# The job name `ci` is the status-check context referenced by branch protection —
+# keep them in sync.
+#
+# Adapted from the default pnpm template to this Rust workspace (cargo fmt/clippy/
+# test/build). Trigger is PR-only for now; add `push: branches: [main]` once the
+# crates live on main and a push build is worth running.
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    # Skip draft PRs.
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all --all-features
+
+      - name: Build
+        run: cargo build --all --all-features

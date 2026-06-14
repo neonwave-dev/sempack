@@ -1,0 +1,5 @@
+# Code owners — requested for review automatically on matching paths.
+# Docs: https://docs.github.com/articles/about-code-owners
+# Default owner for everything. Must be a GitHub user (@username) or team
+# (@org/team) — a bare org name is NOT valid here.
+*       @MyNameReallySux

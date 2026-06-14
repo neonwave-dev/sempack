@@ -1,0 +1,18 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai/guides/configure-coderabbit
+# Threads triaged by the pr-review skill (alongside Copilot's) in the ship-it flow.
+language: en-US
+early_access: false
+reviews:
+  profile: chill            # 'chill' = fewer nitpicks; use 'assertive' for stricter reviews
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false           # mirror the draft-gated CI: don't review drafts
+  path_filters:
+    - "!**/target/**"
+    - "!**/*.lock"
+chat:
+  auto_reply: true
