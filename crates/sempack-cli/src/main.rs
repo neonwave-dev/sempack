@@ -22,7 +22,7 @@ struct Cli {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Compression profile: human | llm (compact/debug planned).
+    /// Compression profile: human | llm | compact (debug not yet available).
     #[arg(long, default_value = "human")]
     profile: String,
 
@@ -42,6 +42,7 @@ fn registry() -> Registry {
         .extractor(sempack_extractors::TextExtractor)
         .reducer(sempack_reducers::HumanReducer)
         .reducer(sempack_reducers::LlmReducer)
+        .reducer(sempack_reducers::CompactReducer)
         .emitter(sempack_emitters::MarkdownEmitter)
         .emitter(sempack_emitters::JsonlEmitter)
         .emitter(sempack_emitters::NdjsonEmitter)

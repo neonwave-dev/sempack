@@ -118,8 +118,8 @@ impl FromStr for Profile {
             "human" => Ok(Profile::Human),
             "llm" => Ok(Profile::Llm),
             "compact" => Ok(Profile::Compact),
-            "debug" => Ok(Profile::Debug),
-            other => Err(format!("unknown profile `{other}` (try: human, llm)")),
+            "debug" => Err("debug profile is not yet available".to_string()),
+            other => Err(format!("unknown profile `{other}` (try: human, llm, compact)")),
         }
     }
 }
@@ -407,10 +407,12 @@ mod tests {
     #[test]
     fn profile_and_format_parse() {
         assert_eq!("llm".parse::<Profile>().unwrap(), Profile::Llm);
+        assert_eq!("compact".parse::<Profile>().unwrap(), Profile::Compact);
         assert_eq!(
             "md".parse::<OutputFormat>().unwrap(),
             OutputFormat::Markdown
         );
         assert!("nope".parse::<Profile>().is_err());
+        assert!("debug".parse::<Profile>().is_err());
     }
 }
