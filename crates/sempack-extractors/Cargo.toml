@@ -6,9 +6,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Feature gates (data / web / office / pdf / …) will be added here once extractors
+# Feature gates (data / web / office / pdf / ...) will be added here once extractors
 # are actually gated; omitted for now so the manifest doesn't advertise a no-op flag.
 
 [dependencies]
 sempack-core = { workspace = true }
 sempack-ir = { workspace = true }
+pulldown-cmark = "0.13"
