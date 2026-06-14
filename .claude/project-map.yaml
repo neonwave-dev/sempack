@@ -2,9 +2,9 @@
 # Read by the `triage` skill (and any skill that needs the repo↔project link).
 # Fill in the surfaces this repo actually uses; delete the ones it doesn't.
 
-# linear:
-#   team: TEAMKEY          # Linear team key (home machines, ISSUE_TRACKER=linear)
-#   project: sempack       # Linear project name or id
+linear:
+  team: NEO              # NeonWave team key (home machines, ISSUE_TRACKER=linear)
+  project: SemPack       # Linear project name
 
 # jira:
 #   project: PROJKEY       # Jira project key (work machines, ISSUE_TRACKER=jira)

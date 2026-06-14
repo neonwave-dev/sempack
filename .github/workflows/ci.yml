@@ -1,11 +1,6 @@
 # Draft-gated CI. Draft PRs are skipped; marking a PR "Ready for review"
 # (what the ship-ready skill does) triggers this run, which watch-ci then polls.
-# The job name `ci` is the status-check context referenced by branch protection —
-# keep them in sync.
-#
-# Adapted from the default pnpm template to this Rust workspace (cargo fmt/clippy/
-# test/build). Trigger is PR-only for now; add `push: branches: [main]` once the
-# crates live on main and a push build is worth running.
+# Job names match the org ruleset check contexts: "Rust" and "TypeScript".
 name: CI
 
 on:
@@ -24,13 +19,14 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  ci:
-    name: ci
+  rust:
+    name: Rust
     runs-on: ubuntu-latest
-    # Skip draft PRs.
     if: github.event.pull_request.draft == false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -51,3 +47,39 @@ jobs:
 
       - name: Build
         run: cargo build --all --all-features
+
+  typescript:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Enable Corepack
+        if: hashFiles('pnpm-lock.yaml') != ''
+        run: corepack enable
+
+      - name: Setup Node
+        if: hashFiles('pnpm-lock.yaml') != ''
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        if: hashFiles('pnpm-lock.yaml') != ''
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        if: hashFiles('pnpm-lock.yaml') != ''
+        run: pnpm typecheck
+
+      - name: Lint
+        if: hashFiles('pnpm-lock.yaml') != ''
+        run: pnpm lint:ts
+
+      - name: Build
+        if: hashFiles('pnpm-lock.yaml') != ''
+        run: pnpm build
