@@ -1,20 +1,27 @@
-//! Reducer plugins — the compression profiles.
+//! Reducer plugins -- the compression profiles.
 //!
 //! P1 ships two. Both clean whitespace and drop empty blocks; `llm` additionally
 //! squeezes structure for token economy. The profile set widens later (`compact`
-//! soon, `debug` dev-flag, `rag` deferred) — each is just another [`Reducer`].
+//! soon, `debug` dev-flag, `rag` deferred) -- each is just another [`Reducer`].
+//!
+//! ## Diff-aware reduction
+//!
+//! [`DiffReducer`] is a sub-pass (not a top-level [`Reducer`] impl) invoked by
+//! both `llm` and `compact` profiles. It compresses `git diff` output inside
+//! [`Block::Code`] blocks without discarding any `+`/`-` lines.
 
 use sempack_core::{Profile, Reducer, Result};
 use sempack_ir::{Block, DocumentIr};
+
+// ---------------------------------------------------------------------------
+// Whitespace helpers (shared by all profiles)
+// ---------------------------------------------------------------------------
 
 /// Collapse all runs of whitespace in `s` into single spaces.
 fn collapse(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Collapse runs of whitespace in the prose blocks (paragraph / heading / quote /
-/// list items). Code blocks and structured blocks (table / record / unsupported) are
-/// left as-is, and container blocks are not recursed into.
 fn collapse_ws(doc: &mut DocumentIr) {
     for b in &mut doc.blocks {
         match b {
@@ -25,9 +32,6 @@ fn collapse_ws(doc: &mut DocumentIr) {
                 for i in items.iter_mut() {
                     *i = collapse(i);
                 }
-                // An item that was only whitespace collapses to "" — drop it so we
-                // never emit a blank bullet (`- `). A list emptied this way is then
-                // discarded by `drop_empty`.
                 items.retain(|i| !i.is_empty());
             }
             _ => {}
@@ -35,7 +39,6 @@ fn collapse_ws(doc: &mut DocumentIr) {
     }
 }
 
-/// Drop blocks that carry no content after cleanup.
 fn drop_empty(doc: &mut DocumentIr) {
     doc.blocks.retain(|b| match b {
         Block::Paragraph { text } | Block::Heading { text, .. } | Block::Quote { text } => {
@@ -46,7 +49,209 @@ fn drop_empty(doc: &mut DocumentIr) {
     });
 }
 
-/// `human` — light touch: tidy whitespace, drop empties, keep all structure.
+// ---------------------------------------------------------------------------
+// Diff-aware sub-pass
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct DiffConfig {
+    pub max_context: usize,
+    pub max_hunks: usize,
+    pub max_files: usize,
+}
+
+impl Default for DiffConfig {
+    fn default() -> Self {
+        Self {
+            max_context: 2,
+            max_hunks: 10,
+            max_files: 20,
+        }
+    }
+}
+
+pub struct DiffReducer {
+    config: DiffConfig,
+}
+
+impl DiffReducer {
+    pub fn new(config: DiffConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn apply(&self, doc: &mut DocumentIr) {
+        for block in &mut doc.blocks {
+            if let Block::Code { lang, text } = block {
+                if is_diff_block(lang.as_deref(), text) {
+                    *text = self.reduce_diff(text);
+                }
+            }
+        }
+    }
+
+    fn reduce_diff(&self, text: &str) -> String {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut file_sections: Vec<Vec<&str>> = Vec::new();
+        let mut current: Vec<&str> = Vec::new();
+
+        for &line in &lines {
+            if line.starts_with("--- ") && !current.is_empty() {
+                file_sections.push(current);
+                current = Vec::new();
+            }
+            current.push(line);
+        }
+        if !current.is_empty() {
+            file_sections.push(current);
+        }
+        if file_sections.is_empty() {
+            file_sections.push(lines.clone());
+        }
+
+        let total_files = file_sections.len();
+        let omitted_files = total_files.saturating_sub(self.config.max_files);
+        file_sections.truncate(self.config.max_files);
+
+        let mut out = String::new();
+        for section in &file_sections {
+            let reduced = self.reduce_file_section(section);
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&reduced);
+        }
+
+        if omitted_files > 0 {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&format!("[{omitted_files} files omitted]"));
+        }
+
+        out
+    }
+
+    fn reduce_file_section(&self, lines: &[&str]) -> String {
+        let hunk_starts: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| if l.starts_with("@@ ") { Some(i) } else { None })
+            .collect();
+
+        let total_hunks = hunk_starts.len();
+
+        if total_hunks == 0 {
+            return lines.join("\n");
+        }
+
+        let kept_hunks = total_hunks.min(self.config.max_hunks);
+        let omitted_hunks = total_hunks - kept_hunks;
+
+        let mut out = String::new();
+
+        let first_hunk = hunk_starts[0];
+        if first_hunk > 0 {
+            out.push_str(&lines[..first_hunk].join("\n"));
+        }
+
+        for h in 0..kept_hunks {
+            let start = hunk_starts[h];
+            let end = if h + 1 < hunk_starts.len() {
+                hunk_starts[h + 1]
+            } else {
+                lines.len()
+            };
+            let hunk_lines = &lines[start..end];
+
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&self.reduce_hunk(hunk_lines));
+        }
+
+        if omitted_hunks > 0 {
+            out.push('\n');
+            out.push_str(&format!("[{omitted_hunks} hunks omitted]"));
+        }
+
+        out
+    }
+
+    fn reduce_hunk<'a>(&self, lines: &[&'a str]) -> String {
+        if lines.is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::new();
+        out.push_str(lines[0]);
+
+        let mut context_run: Vec<&'a str> = Vec::new();
+        let max_ctx = self.config.max_context;
+
+        let flush_context = |run: &mut Vec<&str>, out: &mut String| {
+            if run.is_empty() {
+                return;
+            }
+            if run.len() <= max_ctx {
+                for &l in run.iter() {
+                    out.push('\n');
+                    out.push_str(l);
+                }
+            } else {
+                for &l in run.iter().take(max_ctx) {
+                    out.push('\n');
+                    out.push_str(l);
+                }
+                let omitted = run.len() - max_ctx;
+                out.push('\n');
+                out.push_str(&format!("[{omitted} context lines omitted]"));
+            }
+            run.clear();
+        };
+
+        for &line in &lines[1..] {
+            if line.starts_with('+') || line.starts_with('-') {
+                flush_context(&mut context_run, &mut out);
+                out.push('\n');
+                out.push_str(line);
+            } else {
+                context_run.push(line);
+            }
+        }
+
+        flush_context(&mut context_run, &mut out);
+        out
+    }
+}
+
+fn is_diff_block(lang: Option<&str>, text: &str) -> bool {
+    if let Some(l) = lang {
+        if l.eq_ignore_ascii_case("diff") || l.eq_ignore_ascii_case("patch") {
+            return true;
+        }
+    }
+    let mut has_minus_header = false;
+    let mut has_plus_header = false;
+    let mut has_hunk = false;
+    for line in text.lines().take(30) {
+        if line.starts_with("--- ") {
+            has_minus_header = true;
+        }
+        if line.starts_with("+++ ") {
+            has_plus_header = true;
+        }
+        if line.starts_with("@@ ") && line.contains(" @@") {
+            has_hunk = true;
+        }
+    }
+    (has_minus_header && has_plus_header) || has_hunk
+}
+
+// ---------------------------------------------------------------------------
+// Registered reducers
+// ---------------------------------------------------------------------------
+
+/// `human` -- light touch: tidy whitespace, drop empties, keep all structure.
 pub struct HumanReducer;
 
 impl Reducer for HumanReducer {
@@ -63,8 +268,9 @@ impl Reducer for HumanReducer {
     }
 }
 
-/// `llm` — human cleanup plus token-economy moves: merge adjacent paragraphs and
+/// `llm` -- human cleanup plus token-economy moves: merge adjacent paragraphs and
 /// fold block quotes into paragraphs (the prose matters, the decoration does not).
+/// Also applies diff-aware reduction to any `Code` blocks containing diffs.
 pub struct LlmReducer;
 
 impl Reducer for LlmReducer {
@@ -78,7 +284,6 @@ impl Reducer for LlmReducer {
         collapse_ws(doc);
         drop_empty(doc);
 
-        // Quotes → paragraphs (drop the citation framing for the model).
         for b in &mut doc.blocks {
             if let Block::Quote { text } = b {
                 *b = Block::Paragraph {
@@ -87,7 +292,6 @@ impl Reducer for LlmReducer {
             }
         }
 
-        // Merge consecutive paragraphs into one.
         let mut merged: Vec<Block> = Vec::with_capacity(doc.blocks.len());
         for b in doc.blocks.drain(..) {
             if let (Some(Block::Paragraph { text: prev }), Block::Paragraph { text }) =
@@ -100,14 +304,16 @@ impl Reducer for LlmReducer {
             }
         }
         doc.blocks = merged;
+
+        DiffReducer::new(DiffConfig::default()).apply(doc);
+
         Ok(())
     }
 }
 
 /// `compact` -- aggressive token-economy: whitespace cleanup, drop quotes entirely,
 /// deduplicate identical paragraphs, merge consecutive short paragraphs
-/// (combined length < 200 chars). Targets >=40% block-count reduction vs `human`
-/// on typical prose.
+/// (combined length < 200 chars). Also applies diff-aware reduction.
 pub struct CompactReducer;
 
 impl Reducer for CompactReducer {
@@ -118,18 +324,12 @@ impl Reducer for CompactReducer {
         Profile::Compact
     }
     fn reduce(&self, doc: &mut DocumentIr) -> Result<()> {
-        // 1. Collapse whitespace runs in prose blocks.
         collapse_ws(doc);
 
-        // 2. Drop Block::Quote entirely (aggressive -- the citation framing and
-        //    the quoted prose both go; compact cares only about token savings).
         doc.blocks.retain(|b| !matches!(b, Block::Quote { .. }));
 
-        // 3. Drop empty blocks.
         drop_empty(doc);
 
-        // 4. Deduplicate paragraphs with identical text (keep first occurrence).
-        // collapse_ws already trimmed all prose blocks, so no extra trim needed.
         let mut seen: std::collections::HashSet<String> =
             std::collections::HashSet::with_capacity(doc.blocks.len());
         doc.blocks.retain(|b| match b {
@@ -137,7 +337,6 @@ impl Reducer for CompactReducer {
             _ => true,
         });
 
-        // 5. Merge consecutive paragraphs whose combined length is < 200 chars.
         let mut merged: Vec<Block> = Vec::with_capacity(doc.blocks.len());
         for b in doc.blocks.drain(..) {
             if let (Some(Block::Paragraph { text: prev }), Block::Paragraph { text: next }) =
@@ -153,9 +352,15 @@ impl Reducer for CompactReducer {
         }
         doc.blocks = merged;
 
+        DiffReducer::new(DiffConfig::default()).apply(doc);
+
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -176,12 +381,17 @@ mod tests {
         d
     }
 
+    fn code_block(lang: Option<&str>, text: &str) -> Block {
+        Block::Code {
+            lang: lang.map(String::from),
+            text: text.to_string(),
+        }
+    }
+
     #[test]
     fn human_collapses_and_drops() {
         let mut d = doc(vec![
-            Block::Paragraph {
-                text: "a    b\n c".into(),
-            },
+            Block::Paragraph { text: "a    b\n c".into() },
             Block::Paragraph { text: "   ".into() },
         ]);
         HumanReducer.reduce(&mut d).unwrap();
@@ -207,7 +417,6 @@ mod tests {
 
     #[test]
     fn whitespace_only_list_items_are_pruned() {
-        // A list whose items are all whitespace must be dropped, not emitted as `- `.
         let mut d = doc(vec![Block::List {
             ordered: false,
             items: vec!["  ".into(), "real".into(), "\t".into()],
@@ -222,15 +431,9 @@ mod tests {
     #[test]
     fn compact_drops_quotes() {
         let mut d = doc(vec![
-            Block::Paragraph {
-                text: "intro".into(),
-            },
-            Block::Quote {
-                text: "someone said something".into(),
-            },
-            Block::Paragraph {
-                text: "outro".into(),
-            },
+            Block::Paragraph { text: "intro".into() },
+            Block::Quote { text: "someone said something".into() },
+            Block::Paragraph { text: "outro".into() },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
         assert!(
@@ -241,32 +444,22 @@ mod tests {
 
     #[test]
     fn compact_deduplicates_paragraphs() {
-        // Use long texts so the merge step does not coalesce them.
         let para = "x".repeat(150);
         let other = "y".repeat(150);
         let mut d = doc(vec![
             Block::Paragraph { text: para.clone() },
-            Block::Paragraph {
-                text: other.clone(),
-            },
+            Block::Paragraph { text: other.clone() },
             Block::Paragraph { text: para.clone() },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
-        // The duplicate third block should be gone; para + other should not merge
-        // (combined 150 + 1 + 150 = 301 >= 200).
         assert_eq!(d.blocks.len(), 2, "duplicate paragraph should be dropped");
     }
 
     #[test]
     fn compact_merges_short_consecutive_paragraphs() {
-        // Two short paragraphs (well under 200 combined) must be merged.
         let mut d = doc(vec![
-            Block::Paragraph {
-                text: "short one".into(),
-            },
-            Block::Paragraph {
-                text: "short two".into(),
-            },
+            Block::Paragraph { text: "short one".into() },
+            Block::Paragraph { text: "short two".into() },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
         assert_eq!(d.blocks.len(), 1, "short paragraphs should be merged");
@@ -274,17 +467,11 @@ mod tests {
 
     #[test]
     fn compact_does_not_merge_long_paragraphs() {
-        // Two paragraphs with different long texts (>=200 combined) must stay separate.
-        // Different texts ensure dedup does not collapse them first.
         let long_a = "x".repeat(150);
         let long_b = "y".repeat(150);
         let mut d = doc(vec![
-            Block::Paragraph {
-                text: long_a.clone(),
-            },
-            Block::Paragraph {
-                text: long_b.clone(),
-            },
+            Block::Paragraph { text: long_a.clone() },
+            Block::Paragraph { text: long_b.clone() },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
         assert_eq!(d.blocks.len(), 2, "long paragraphs must not be merged");
@@ -292,39 +479,17 @@ mod tests {
 
     #[test]
     fn compact_achieves_block_count_reduction_vs_human() {
-        // Fixture: quotes, duplicate paragraphs, short consecutive paragraphs.
-        // Compact must produce <=60% of human block count (i.e., >=40% reduction).
         let fixture = vec![
-            Block::Paragraph {
-                text: "Introduction paragraph that sets the scene.".into(),
-            },
-            Block::Quote {
-                text: "A famous quote about something interesting.".into(),
-            },
-            Block::Paragraph {
-                text: "Short note.".into(),
-            },
-            Block::Paragraph {
-                text: "Another short note.".into(),
-            },
-            Block::Paragraph {
-                text: "Yet another short note.".into(),
-            },
-            Block::Quote {
-                text: "Another quotation that adds bulk.".into(),
-            },
-            Block::Paragraph {
-                text: "Duplicate paragraph appears here.".into(),
-            },
-            Block::Paragraph {
-                text: "Non-duplicate content.".into(),
-            },
-            Block::Paragraph {
-                text: "Duplicate paragraph appears here.".into(),
-            },
-            Block::Paragraph {
-                text: "Concluding thoughts.".into(),
-            },
+            Block::Paragraph { text: "Introduction paragraph that sets the scene.".into() },
+            Block::Quote { text: "A famous quote about something interesting.".into() },
+            Block::Paragraph { text: "Short note.".into() },
+            Block::Paragraph { text: "Another short note.".into() },
+            Block::Paragraph { text: "Yet another short note.".into() },
+            Block::Quote { text: "Another quotation that adds bulk.".into() },
+            Block::Paragraph { text: "Duplicate paragraph appears here.".into() },
+            Block::Paragraph { text: "Non-duplicate content.".into() },
+            Block::Paragraph { text: "Duplicate paragraph appears here.".into() },
+            Block::Paragraph { text: "Concluding thoughts.".into() },
         ];
 
         let mut human_doc = doc(fixture.clone());
@@ -338,6 +503,190 @@ mod tests {
         assert!(
             compact_count * 100 <= human_count * 60,
             "compact ({compact_count} blocks) must be <=60% of human ({human_count} blocks)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DiffReducer tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn diff_small_no_change() {
+        // 1 context line before + 1 after -- both under the cap of 2.
+        let diff = concat!(
+            "--- a/foo.rs\n",
+            "+++ b/foo.rs\n",
+            "@@ -1,5 +1,5 @@\n",
+            " fn main() {\n",
+            "-    let x = 1;\n",
+            "+    let x = 2;\n",
+            " }",
+        );
+        let mut d = doc(vec![code_block(Some("diff"), diff)]);
+        LlmReducer.reduce(&mut d).unwrap();
+        match &d.blocks[0] {
+            Block::Code { text, .. } => assert_eq!(text, diff),
+            other => panic!("expected Code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_context_cap_fires() {
+        let config = DiffConfig { max_context: 2, max_hunks: 10, max_files: 20 };
+        // 5 context lines before change (cap=2 -> 3 omitted), 3 after (cap=2 -> 1 omitted).
+        let diff = concat!(
+            "--- a/foo.rs\n",
+            "+++ b/foo.rs\n",
+            "@@ -1,10 +1,10 @@\n",
+            " ctx1\n",
+            " ctx2\n",
+            " ctx3\n",
+            " ctx4\n",
+            " ctx5\n",
+            "-old line\n",
+            "+new line\n",
+            " trail1\n",
+            " trail2\n",
+            " trail3",
+        );
+        let result = DiffReducer::new(config).reduce_diff(diff);
+        assert!(result.contains("-old line"), "must keep deletion");
+        assert!(result.contains("+new line"), "must keep addition");
+        assert!(
+            result.contains("[3 context lines omitted]"),
+            "must emit leading context sentinel: {result}"
+        );
+        assert!(
+            result.contains("[1 context lines omitted]"),
+            "must emit trailing context sentinel: {result}"
+        );
+        assert!(result.contains("--- a/foo.rs"), "must keep --- header");
+        assert!(result.contains("+++ b/foo.rs"), "must keep +++ header");
+    }
+
+    #[test]
+    fn diff_hunk_cap_fires() {
+        let config = DiffConfig { max_context: 2, max_hunks: 3, max_files: 20 };
+        let mut diff = String::from("--- a/big.rs\n+++ b/big.rs\n");
+        for i in 0..5usize {
+            let n = i * 10 + 1;
+            diff.push_str(&format!("@@ -{n},{n} +{n},{n} @@\n ctx\n-old{i}\n+new{i}\n"));
+        }
+        let result = DiffReducer::new(config).reduce_diff(&diff);
+        for i in 0..3usize {
+            assert!(result.contains(&format!("-old{i}")), "kept hunk {i} deletion must be present");
+            assert!(result.contains(&format!("+new{i}")), "kept hunk {i} addition must be present");
+        }
+        for i in 3..5usize {
+            assert!(!result.contains(&format!("-old{i}")), "omitted hunk {i} must be absent");
+            assert!(!result.contains(&format!("+new{i}")), "omitted hunk {i} must be absent");
+        }
+        assert!(result.contains("[2 hunks omitted]"), "must emit hunk sentinel: {result}");
+    }
+
+    #[test]
+    fn diff_file_cap_fires() {
+        let config = DiffConfig { max_context: 2, max_hunks: 10, max_files: 3 };
+        let mut diff = String::new();
+        for i in 0..5usize {
+            diff.push_str(&format!(
+                "--- a/file{i}.rs\n+++ b/file{i}.rs\n@@ -1,3 +1,3 @@\n ctx\n-old\n+new\n"
+            ));
+        }
+        let result = DiffReducer::new(config).reduce_diff(&diff);
+        for i in 0..3usize {
+            assert!(result.contains(&format!("--- a/file{i}.rs")), "file {i} must be present");
+        }
+        for i in 3..5usize {
+            assert!(!result.contains(&format!("--- a/file{i}.rs")), "file {i} must be omitted");
+        }
+        assert!(result.contains("[2 files omitted]"), "must emit file sentinel: {result}");
+    }
+
+    #[test]
+    fn diff_human_profile_unaffected() {
+        let diff = concat!(
+            "--- a/foo.rs\n",
+            "+++ b/foo.rs\n",
+            "@@ -1,10 +1,10 @@\n",
+            " ctx1\n",
+            " ctx2\n",
+            " ctx3\n",
+            " ctx4\n",
+            " ctx5\n",
+            "-old line\n",
+            "+new line",
+        );
+        let mut d = doc(vec![code_block(Some("diff"), diff)]);
+        HumanReducer.reduce(&mut d).unwrap();
+        match &d.blocks[0] {
+            Block::Code { text, .. } => assert_eq!(text, diff, "human must not alter diff blocks"),
+            other => panic!("expected Code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_detected_by_content_sniff() {
+        let diff = concat!(
+            "--- a/foo.rs\n",
+            "+++ b/foo.rs\n",
+            "@@ -1,3 +1,3 @@\n",
+            " ctx1\n",
+            " ctx2\n",
+            "-old line\n",
+            "+new line",
+        );
+        let mut d = doc(vec![code_block(None, diff)]);
+        LlmReducer.reduce(&mut d).unwrap();
+        match &d.blocks[0] {
+            Block::Code { text, .. } => assert_eq!(text, diff),
+            other => panic!("expected Code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_1000_line_trimmed_preserves_changes() {
+        let mut diff = String::from(
+            "--- a/large.rs\n+++ b/large.rs\n@@ -1,900 +1,900 @@\n",
+        );
+        for i in 0..100usize {
+            diff.push_str(&format!(" context line {i}\n"));
+        }
+        for i in 0..400usize {
+            diff.push_str(&format!("-removed line {i}\n"));
+            diff.push_str(&format!("+added line {i}\n"));
+        }
+        let diff = diff.trim_end_matches('\n').to_string();
+
+        let mut d = doc(vec![code_block(Some("diff"), &diff)]);
+        LlmReducer.reduce(&mut d).unwrap();
+
+        let result = match &d.blocks[0] {
+            Block::Code { text, .. } => text.clone(),
+            other => panic!("expected Code block, got {other:?}"),
+        };
+
+        assert!(
+            result.len() < diff.len(),
+            "llm must trim a large diff (before={}, after={})",
+            diff.len(),
+            result.len()
+        );
+
+        for i in 0..400usize {
+            assert!(
+                result.contains(&format!("-removed line {i}")),
+                "deletion {i} must be preserved"
+            );
+            assert!(
+                result.contains(&format!("+added line {i}")),
+                "addition {i} must be preserved"
+            );
+        }
+
+        assert!(
+            result.contains("context lines omitted"),
+            "context sentinel must be present"
         );
     }
 }
