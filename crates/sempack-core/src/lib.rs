@@ -31,6 +31,8 @@ pub enum Error {
     NoEmitter(OutputFormat),
     #[error("image pipeline is not available yet (planned for P6)")]
     ImagePipelineUnavailable,
+    #[error("unrecognized input: {0}")]
+    UnsupportedInput(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]
@@ -249,6 +251,7 @@ impl Registry {
 // ---------------------------------------------------------------------------
 
 /// The product of a pipeline run: serialized output plus before/after metrics.
+#[derive(Debug, Clone)]
 pub struct Output {
     pub content: String,
     pub format: OutputFormat,
@@ -269,7 +272,15 @@ pub fn run(reg: &Registry, input: Input, profile: Profile, format: OutputFormat)
     // --- Route -------------------------------------------------------------
     match input.detected.class {
         ContentClass::Image => return Err(Error::ImagePipelineUnavailable),
-        ContentClass::Text | ContentClass::Unknown => {}
+        // Unknown = not valid UTF-8 and not a recognized image. Reject it rather
+        // than lossy-decoding binary into replacement characters and reporting
+        // misleading metrics for it.
+        ContentClass::Unknown => {
+            return Err(Error::UnsupportedInput(
+                "input is neither valid UTF-8 text nor a recognized image format".into(),
+            ))
+        }
+        ContentClass::Text => {}
     }
 
     // --- Extract (with graceful fall-back to the plain-text extractor) ------
@@ -349,7 +360,9 @@ fn normalize_block(b: &mut Block) {
                 f.value = f.value.nfc().collect();
             }
         }
-        Block::Unsupported { .. } => {}
+        Block::Unsupported { note } => {
+            *note = note.nfc().collect();
+        }
     }
 }
 
@@ -374,6 +387,21 @@ mod tests {
     fn unknown_binary_sniffs_to_unknown() {
         let d = detect(None, &[0xff, 0xfe, 0x00]);
         assert_eq!(d.class, ContentClass::Unknown);
+    }
+
+    #[test]
+    fn unknown_input_is_rejected_by_pipeline() {
+        // Non-UTF8 binary with no known extension must error, not flow through
+        // the text path as replacement characters.
+        let bytes = vec![0xff, 0xfe, 0x00];
+        let detected = detect(None, &bytes);
+        let input = Input {
+            path: None,
+            bytes,
+            detected,
+        };
+        let err = run(&Registry::new(), input, Profile::Human, OutputFormat::Text).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedInput(_)));
     }
 
     #[test]

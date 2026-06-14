@@ -45,16 +45,35 @@ impl Extractor for TextExtractor {
     fn extract(&self, input: &Input) -> Result<DocumentIr> {
         let text = input.text();
         let mut doc = DocumentIr::new(doc_id(input), source(input));
-        for para in text.split("\n\n") {
-            let p = para.trim();
-            if p.is_empty() {
-                continue;
+        // Split paragraphs on blank lines via `lines()`, which strips both `\n`
+        // and `\r\n` — so Windows (CRLF) files aren't collapsed into one paragraph.
+        let mut para: Vec<&str> = Vec::new();
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                push_paragraph(&mut doc, &mut para);
+            } else {
+                para.push(line);
             }
-            // collapse the internal hard wraps of one paragraph into spaces
-            let joined = p.split_whitespace().collect::<Vec<_>>().join(" ");
-            doc.push(Block::Paragraph { text: joined });
         }
+        push_paragraph(&mut doc, &mut para);
         Ok(doc)
+    }
+}
+
+/// Join the accumulated lines into one paragraph (internal whitespace collapsed)
+/// and push it, unless empty. Clears `lines`.
+fn push_paragraph(doc: &mut DocumentIr, lines: &mut Vec<&str>) {
+    if lines.is_empty() {
+        return;
+    }
+    let collapsed = lines
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    lines.clear();
+    if !collapsed.is_empty() {
+        doc.push(Block::Paragraph { text: collapsed });
     }
 }
 
@@ -127,6 +146,12 @@ impl Extractor for MarkdownExtractor {
 
             if let Some((ordered, item)) = list_item(trimmed) {
                 flush_para(&mut doc, &mut para);
+                // If the marker style flips mid-list (e.g. `- ` then `1. ` with no
+                // blank line between), flush the current list first so ordered and
+                // unordered items don't merge into one block with the wrong type.
+                if !list.is_empty() && ordered != list_ordered {
+                    flush_list(&mut doc, &mut list, list_ordered);
+                }
                 list_ordered = ordered;
                 list.push(item);
                 continue;
@@ -242,5 +267,30 @@ mod tests {
             .extract(&input("a.txt", "one\nline\n\nsecond para"))
             .unwrap();
         assert_eq!(doc.blocks.len(), 2);
+    }
+
+    #[test]
+    fn text_splits_paragraphs_with_crlf() {
+        // Windows blank lines (\r\n\r\n) must still separate paragraphs.
+        let doc = TextExtractor
+            .extract(&input("a.txt", "first\r\n\r\nsecond\r\n\r\nthird"))
+            .unwrap();
+        assert_eq!(doc.blocks.len(), 3);
+    }
+
+    #[test]
+    fn markdown_marker_flip_does_not_merge_lists() {
+        // `- ` then `1. ` with no blank line must yield two separate lists.
+        let doc = MarkdownExtractor
+            .extract(&input("a.md", "- bullet\n1. number\n"))
+            .unwrap();
+        let lists: Vec<_> = doc
+            .blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert_eq!(lists.len(), 2);
+        assert!(matches!(lists[0], Block::List { ordered: false, .. }));
+        assert!(matches!(lists[1], Block::List { ordered: true, .. }));
     }
 }

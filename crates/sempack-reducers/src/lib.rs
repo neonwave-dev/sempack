@@ -20,9 +20,13 @@ fn collapse_ws(doc: &mut DocumentIr) {
                 *text = collapse(text);
             }
             Block::List { items, .. } => {
-                for i in items {
+                for i in items.iter_mut() {
                     *i = collapse(i);
                 }
+                // An item that was only whitespace collapses to "" — drop it so we
+                // never emit a blank bullet (`- `). A list emptied this way is then
+                // discarded by `drop_empty`.
+                items.retain(|i| !i.is_empty());
             }
             _ => {}
         }
@@ -144,5 +148,19 @@ mod tests {
         ]);
         LlmReducer.reduce(&mut d).unwrap();
         assert_eq!(d.blocks.len(), 1);
+    }
+
+    #[test]
+    fn whitespace_only_list_items_are_pruned() {
+        // A list whose items are all whitespace must be dropped, not emitted as `- `.
+        let mut d = doc(vec![Block::List {
+            ordered: false,
+            items: vec!["  ".into(), "real".into(), "\t".into()],
+        }]);
+        HumanReducer.reduce(&mut d).unwrap();
+        match d.blocks.as_slice() {
+            [Block::List { items, .. }] => assert_eq!(items, &["real".to_string()]),
+            other => panic!("expected one list with one item, got {other:?}"),
+        }
     }
 }
