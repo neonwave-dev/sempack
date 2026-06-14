@@ -207,7 +207,7 @@ enum Frame {
 
 /// Return a mutable reference to the inline text buffer of the topmost frame
 /// that holds one, or `None` if the top frame has no inline buffer.
-fn top_buf_mut(stack: &mut Vec<Frame>) -> Option<&mut String> {
+fn top_buf_mut(stack: &mut [Frame]) -> Option<&mut String> {
     stack.last_mut().and_then(|f| match f {
         Frame::Paragraph { buf }
         | Frame::Heading { buf, .. }
