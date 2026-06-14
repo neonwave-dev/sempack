@@ -229,7 +229,9 @@ impl Extractor for MarkdownExtractor {
         // --- pulldown-cmark parse -------------------------------------------
         let mut opts = Options::empty();
         opts.insert(Options::ENABLE_TABLES);
-        opts.insert(Options::ENABLE_SMART_PUNCTUATION);
+        // ENABLE_SMART_PUNCTUATION is intentionally NOT set: SemPack is a faithful
+        // extraction tool and must not rewrite source text (straight quotes -> curly,
+        // -- -> en-dash, etc.) before downstream reducers/emitters see it.
         opts.insert(Options::ENABLE_STRIKETHROUGH);
 
         let events: Vec<Event<'_>> = Parser::new_ext(md_text, opts).collect();
