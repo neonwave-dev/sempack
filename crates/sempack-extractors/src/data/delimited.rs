@@ -101,7 +101,7 @@ impl DelimitedExtractor {
             Ok(h) => h.iter().map(|s| s.to_string()).collect(),
             Err(e) => {
                 doc.warn(
-                    &format!("{}.read_error", self.format_name),
+                    format!("{}.read_error", self.format_name),
                     format!("failed to read headers: {e}"),
                 );
                 return Ok(doc);
@@ -117,7 +117,7 @@ impl DelimitedExtractor {
                     let n = record.len();
                     if n != col_count {
                         doc.warn(
-                            &format!("{}.ragged_row", self.format_name),
+                            format!("{}.ragged_row", self.format_name),
                             format!("row {} has {n} field(s), expected {col_count}", row_idx + 2),
                         );
                     }
@@ -128,7 +128,7 @@ impl DelimitedExtractor {
                 }
                 Err(e) => {
                     doc.warn(
-                        &format!("{}.read_error", self.format_name),
+                        format!("{}.read_error", self.format_name),
                         format!("row {}: {e}", row_idx + 2),
                     );
                 }
