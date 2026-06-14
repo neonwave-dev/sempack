@@ -1,12 +1,21 @@
 //! Built-in extractor plugins.
 //!
-//! P1 ships two: [`TextExtractor`] (plain text → paragraphs) and [`MarkdownExtractor`]
+//! P1 ships two: [`TextExtractor`] (plain text -> paragraphs) and [`MarkdownExtractor`]
 //! (a small, dependency-free line parser covering headings, paragraphs, lists, block
-//! quotes and fenced code). The markdown parser is deliberately minimal — the planned
+//! quotes and fenced code). The markdown parser is deliberately minimal -- the planned
 //! upgrade is `pulldown-cmark` for full CommonMark fidelity (TODO P1).
+//!
+//! The `web` feature (on by default) adds [`HtmlExtractor`], [`XmlExtractor`], and
+//! [`SvgExtractor`] using `scraper` and `quick-xml`.
 
 use sempack_core::{Extractor, Input, Result};
 use sempack_ir::{Block, DocumentIr, SourceInfo};
+
+#[cfg(feature = "web")]
+pub mod web;
+
+#[cfg(feature = "web")]
+pub use web::{HtmlExtractor, SvgExtractor, XmlExtractor};
 
 /// Build the `SourceInfo` for an input.
 fn source(input: &Input) -> SourceInfo {
@@ -46,7 +55,7 @@ impl Extractor for TextExtractor {
         let text = input.text();
         let mut doc = DocumentIr::new(doc_id(input), source(input));
         // Split paragraphs on blank lines via `lines()`, which strips both `\n`
-        // and `\r\n` — so Windows (CRLF) files aren't collapsed into one paragraph.
+        // and `\r\n` -- so Windows (CRLF) files aren't collapsed into one paragraph.
         let mut para: Vec<&str> = Vec::new();
         for line in text.lines() {
             if line.trim().is_empty() {
@@ -171,7 +180,7 @@ impl Extractor for MarkdownExtractor {
             para.push(trimmed.trim().to_string());
         }
 
-        // trailing flush — emit even an empty unterminated fence so a lone opening
+        // trailing flush -- emit even an empty unterminated fence so a lone opening
         // ``` at EOF still becomes a (possibly empty) Block::Code rather than vanishing.
         if in_code {
             doc.push(Block::Code {
@@ -204,7 +213,7 @@ fn flush_list(doc: &mut DocumentIr, list: &mut Vec<String>, ordered: bool) {
     }
 }
 
-/// `## Title` → `(2, "Title")`.
+/// `## Title` -> `(2, "Title")`.
 fn heading(line: &str) -> Option<(u8, String)> {
     let hashes = line.chars().take_while(|c| *c == '#').count();
     if (1..=6).contains(&hashes) && line[hashes..].starts_with(' ') {

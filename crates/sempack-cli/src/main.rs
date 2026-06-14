@@ -1,4 +1,4 @@
-//! SemPack CLI — wires the plugin registries and runs the pipeline on one file.
+//! SemPack CLI -- wires the plugin registries and runs the pipeline on one file.
 //!
 //! ```text
 //! sempack <INPUT> [--profile human|llm] [--format markdown|jsonl|ndjson|text|html]
@@ -40,6 +40,9 @@ fn registry() -> Registry {
     Registry::new()
         .extractor(sempack_extractors::MarkdownExtractor)
         .extractor(sempack_extractors::TextExtractor)
+        .extractor(sempack_extractors::HtmlExtractor)
+        .extractor(sempack_extractors::XmlExtractor)
+        .extractor(sempack_extractors::SvgExtractor)
         .reducer(sempack_reducers::HumanReducer)
         .reducer(sempack_reducers::LlmReducer)
         .emitter(sempack_emitters::MarkdownEmitter)
