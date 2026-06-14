@@ -1,0 +1,12 @@
+[package]
+name = "sempack-emitters"
+description = "SemPack emitter plugins (markdown, jsonl, ndjson, text, html)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sempack-core = { workspace = true }
+sempack-ir = { workspace = true }
+serde_json = { workspace = true }

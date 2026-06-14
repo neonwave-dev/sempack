@@ -1,0 +1,20 @@
+[package]
+name = "sempack-cli"
+description = "SemPack command-line interface."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sempack"
+path = "src/main.rs"
+
+[dependencies]
+sempack-core = { workspace = true }
+sempack-ir = { workspace = true }
+sempack-extractors = { workspace = true }
+sempack-reducers = { workspace = true }
+sempack-emitters = { workspace = true }
+sempack-tokenizers = { workspace = true }
+clap = { workspace = true }

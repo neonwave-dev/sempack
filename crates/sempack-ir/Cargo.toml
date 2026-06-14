@@ -1,0 +1,10 @@
+[package]
+name = "sempack-ir"
+description = "SemPack universal intermediate representation (DocumentIr, blocks)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }

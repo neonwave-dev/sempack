@@ -1,0 +1,14 @@
+[package]
+name = "sempack-extractors"
+description = "Built-in SemPack extractor plugins (P1: text, markdown)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Feature gates (data / web / office / pdf / …) will be added here once extractors
+# are actually gated; omitted for now so the manifest doesn't advertise a no-op flag.
+
+[dependencies]
+sempack-core = { workspace = true }
+sempack-ir = { workspace = true }
