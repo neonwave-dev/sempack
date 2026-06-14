@@ -1,14 +1,20 @@
 [package]
 name = "sempack-extractors"
-description = "Built-in SemPack extractor plugins (P1: text, markdown)."
+description = "Built-in SemPack extractor plugins (P1: text, markdown, html, xml, svg)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Feature gates (data / web / office / pdf / …) will be added here once extractors
-# are actually gated; omitted for now so the manifest doesn't advertise a no-op flag.
+[features]
+default = ["web"]
+web = ["dep:scraper", "dep:quick-xml"]
 
 [dependencies]
 sempack-core = { workspace = true }
 sempack-ir = { workspace = true }
+serde_json = { workspace = true }
+csv = { workspace = true }
+pulldown-cmark = "0.13"
+scraper = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }

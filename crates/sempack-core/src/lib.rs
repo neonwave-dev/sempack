@@ -75,6 +75,7 @@ pub fn detect(path: Option<&str>, bytes: &[u8]) -> Detected {
         Some("jsonl") | Some("ndjson") => ("jsonl", ContentClass::Text, "application/x-ndjson"),
         Some("csv") => ("csv", ContentClass::Text, "text/csv"),
         Some("tsv") => ("tsv", ContentClass::Text, "text/tab-separated-values"),
+        Some("psv") => ("psv", ContentClass::Text, "text/plain"),
         Some("html") | Some("htm") => ("html", ContentClass::Text, "text/html"),
         Some("xml") => ("xml", ContentClass::Text, "application/xml"),
         Some("svg") => ("svg", ContentClass::Text, "image/svg+xml"),
