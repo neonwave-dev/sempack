@@ -114,8 +114,14 @@ fn is_stack_trace_line(trimmed: &str) -> bool {
 /// - pytest / cargo embedded words: `FAILED`, `PASSED`, `ok`, `ERROR`, `WARN`
 /// - `npm ERR!` / `npm WARN`
 fn classify_level(line: &str) -> LogLevel {
-    // Search within first 60 chars so we are not misled by levels deep in content.
-    let head = &line[..line.len().min(60)];
+    // Search within first 60 *characters* so we are not misled by levels deep
+    // in content. Use char_indices to avoid splitting a multi-byte code point.
+    let head_len = line
+        .char_indices()
+        .nth(60)
+        .map(|(i, _)| i)
+        .unwrap_or(line.len());
+    let head = &line[..head_len];
     let head_up = head.to_ascii_uppercase();
 
     for (tag, level) in &[
@@ -325,7 +331,8 @@ fn reduce_log_text(text: &str) -> String {
 
     let flush_run = |output: &mut Vec<String>, count: usize| {
         if count > 0 {
-            output.push(format!("[{count} similar lines omitted]"));
+            let noun = if count == 1 { "line" } else { "lines" };
+            output.push(format!("[{count} similar {noun} omitted]"));
         }
     };
 
@@ -906,23 +913,24 @@ FAILED tests/test_api.py::test_rate_limit - AssertionError
     /// Snapshot test: cargo test output (500-line-scale, mixed ERROR/DEBUG).
     #[test]
     fn snapshot_cargo_test_output() {
-        // Build a representative cargo test output with heavy DEBUG spam.
+        // Build a representative cargo test output with heavy DEBUG spam (~500 lines).
         let mut lines: Vec<String> = Vec::new();
         lines.push("   Compiling sempack-reducers v0.1.0".into());
         lines.push("    Finished test [unoptimized + debuginfo] target(s)".into());
         lines.push("     Running unittests src/lib.rs".into());
         lines.push("".into());
-        lines.push("running 10 tests".into());
+        lines.push("running 20 tests".into());
 
-        // 8 tests pass (INFO equivalent).
-        for i in 0..8 {
+        // 18 tests pass (INFO equivalent).
+        for i in 0..18 {
             lines.push(format!("test tests::case_{i} ... ok"));
         }
-        // Heavy DEBUG noise (simulates log capture from test).
-        for tick in 0..50 {
+        // Heavy DEBUG noise (simulates log capture from test) — 234 scheduler ticks
+        // plus 234 cache-miss lines, totalling 468 debug lines of noise.
+        for tick in 0..234 {
             lines.push(format!("[DEBUG] scheduler tick={tick} queue=0"));
         }
-        for _ in 0..50 {
+        for _ in 0..234 {
             lines.push("[DEBUG] cache miss key=abc123".into());
         }
         // 2 failures.
@@ -937,9 +945,13 @@ FAILED tests/test_api.py::test_rate_limit - AssertionError
         );
         lines.push("note: run with RUST_BACKTRACE=1".into());
         lines.push("".into());
-        lines.push("test result: FAILED. 8 passed; 2 failed".into());
+        lines.push("test result: FAILED. 18 passed; 2 failed".into());
         let input = lines.join("\n");
         let input_lines = input.lines().count();
+        assert!(
+            input_lines >= 500,
+            "fixture must be at least 500 lines, got {input_lines}"
+        );
 
         // Wrap in a Code block and run through llm reducer.
         let mut d = doc(vec![code_block(None, &input)]);
@@ -1016,7 +1028,7 @@ Jan 15 12:00:20 host sshd[1234]: ERROR Connection reset by peer";
             "no raw DEBUG lines should remain in syslog output: {reduced:?}"
         );
         assert!(
-            reduced.contains("similar lines omitted"),
+            reduced.contains("similar line omitted"),
             "dedup sentinel expected for repeated DEBUG kex lines: {reduced:?}"
         );
     }
