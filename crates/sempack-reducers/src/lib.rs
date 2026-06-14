@@ -128,10 +128,12 @@ impl Reducer for CompactReducer {
         // 3. Drop empty blocks.
         drop_empty(doc);
 
-        // 4. Deduplicate paragraphs with identical trimmed text (keep first occurrence).
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // 4. Deduplicate paragraphs with identical text (keep first occurrence).
+        // collapse_ws already trimmed all prose blocks, so no extra trim needed.
+        let mut seen: std::collections::HashSet<String> =
+            std::collections::HashSet::with_capacity(doc.blocks.len());
         doc.blocks.retain(|b| match b {
-            Block::Paragraph { text } => seen.insert(text.trim().to_string()),
+            Block::Paragraph { text } => seen.insert(text.clone()),
             _ => true,
         });
 
@@ -141,7 +143,7 @@ impl Reducer for CompactReducer {
             if let (Some(Block::Paragraph { text: prev }), Block::Paragraph { text: next }) =
                 (merged.last_mut(), &b)
             {
-                if prev.len() + 1 + next.len() < 200 {
+                if prev.chars().count() + 1 + next.chars().count() < 200 {
                     prev.push(' ');
                     prev.push_str(next);
                     continue;
