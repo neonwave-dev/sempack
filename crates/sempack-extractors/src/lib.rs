@@ -5,12 +5,16 @@
 //! block quotes, fenced code with language tags, tables, and YAML/TOML front-matter
 //! stripping).
 
+pub mod data;
+pub use data::{CsvExtractor, JsonExtractor, JsonlExtractor, PsvExtractor, TsvExtractor};
+
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use sempack_core::{Extractor, Input, Result};
 use sempack_ir::{Block, DocumentIr, SourceInfo};
+use std::path::Path;
 
 /// Build the `SourceInfo` for an input.
-fn source(input: &Input) -> SourceInfo {
+pub(crate) fn source(input: &Input) -> SourceInfo {
     SourceInfo {
         path: input.path.clone(),
         media_type: input.detected.media_type.clone(),
@@ -19,8 +23,16 @@ fn source(input: &Input) -> SourceInfo {
     }
 }
 
+/// Extract the file name component from a path string.
+pub(crate) fn extract_filename(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+}
+
 /// Derive a stable document id from the file name (or `"document"`).
-fn doc_id(input: &Input) -> String {
+pub(crate) fn doc_id(input: &Input) -> String {
     input
         .path
         .as_deref()
