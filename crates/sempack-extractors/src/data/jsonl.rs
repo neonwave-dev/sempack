@@ -6,7 +6,8 @@ use sempack_core::{Extractor, Input, Result};
 use sempack_ir::{Block, DocumentIr, Field};
 use serde_json::Value;
 
-use crate::{doc_id, source};
+use super::json_helpers::{scalar_to_string, value_to_string};
+use crate::{doc_id, extract_filename, source};
 
 pub struct JsonlExtractor;
 
@@ -22,12 +23,10 @@ impl Extractor for JsonlExtractor {
     fn extract(&self, input: &Input) -> Result<DocumentIr> {
         let mut doc = DocumentIr::new(doc_id(input), source(input));
 
-        // Populate filename metadata.
         if let Some(path) = &input.path {
-            let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
             doc.metadata
                 .extra
-                .insert("filename".into(), filename.to_string());
+                .insert("filename".into(), extract_filename(path).to_string());
         }
 
         let text = input.text();
@@ -74,7 +73,7 @@ fn json_value_to_block(v: &Value) -> Block {
                 .iter()
                 .map(|(k, val)| Field {
                     key: k.clone(),
-                    value: json_value_to_string(val),
+                    value: value_to_string(val),
                 })
                 .collect();
             fields.sort_by(|a, b| a.key.cmp(&b.key));
@@ -82,31 +81,11 @@ fn json_value_to_block(v: &Value) -> Block {
         }
         Value::Array(arr) => Block::List {
             ordered: false,
-            items: arr.iter().map(json_value_to_string).collect(),
+            items: arr.iter().map(value_to_string).collect(),
         },
         scalar => Block::Paragraph {
-            text: json_scalar_to_string(scalar),
+            text: scalar_to_string(scalar),
         },
-    }
-}
-
-fn json_scalar_to_string(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Null => "null".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        other => json_value_to_string(other),
-    }
-}
-
-fn json_value_to_string(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Null => "null".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        other => serde_json::to_string(other).unwrap_or_else(|_| "?".into()),
     }
 }
 

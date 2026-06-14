@@ -8,6 +8,8 @@
 pub mod data;
 pub use data::{CsvExtractor, JsonExtractor, JsonlExtractor, PsvExtractor, TsvExtractor};
 
+use std::path::Path;
+
 use sempack_core::{Extractor, Input, Result};
 use sempack_ir::{Block, DocumentIr, SourceInfo};
 
@@ -19,6 +21,14 @@ pub(crate) fn source(input: &Input) -> SourceInfo {
         detected_format: input.detected.format.clone(),
         bytes: input.bytes.len() as u64,
     }
+}
+
+/// Extract the file name component from a path string.
+pub(crate) fn extract_filename(path: &str) -> &str {
+    Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
 }
 
 /// Derive a stable document id from the file name (or `"document"`).

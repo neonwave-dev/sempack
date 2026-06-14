@@ -3,8 +3,9 @@
 //! All three share the same logic via [`DelimitedExtractor`]. The first row is
 //! treated as a header row; subsequent rows become the table data.
 //!
-//! Ragged rows (wrong column count) emit a `"csv.ragged_row"` warning and are
-//! still included (padded with empty strings or truncated to match the header count).
+//! Ragged rows (wrong column count) emit a `"<format>.ragged_row"` warning (e.g.
+//! `tsv.ragged_row` for TSV) and are still included (padded or truncated to match
+//! the header count).
 
 use csv::ReaderBuilder;
 use sempack_core::{Extractor, Input, Result};
@@ -99,7 +100,10 @@ impl DelimitedExtractor {
         let headers: Vec<String> = match rdr.headers() {
             Ok(h) => h.iter().map(|s| s.to_string()).collect(),
             Err(e) => {
-                doc.warn("csv.read_error", format!("failed to read headers: {e}"));
+                doc.warn(
+                    &format!("{}.read_error", self.format_name),
+                    format!("failed to read headers: {e}"),
+                );
                 return Ok(doc);
             }
         };
@@ -113,7 +117,7 @@ impl DelimitedExtractor {
                     let n = record.len();
                     if n != col_count {
                         doc.warn(
-                            "csv.ragged_row",
+                            &format!("{}.ragged_row", self.format_name),
                             format!("row {} has {n} field(s), expected {col_count}", row_idx + 2),
                         );
                     }
@@ -123,7 +127,10 @@ impl DelimitedExtractor {
                     rows.push(row);
                 }
                 Err(e) => {
-                    doc.warn("csv.read_error", format!("row {}: {e}", row_idx + 2));
+                    doc.warn(
+                        &format!("{}.read_error", self.format_name),
+                        format!("row {}: {e}", row_idx + 2),
+                    );
                 }
             }
         }
@@ -307,7 +314,7 @@ mod tests {
         let body = "a|b\n1\n";
         let doc = PsvExtractor.extract(&make_input("data.psv", body)).unwrap();
         assert_eq!(doc.warnings.len(), 1);
-        assert_eq!(doc.warnings[0].code, "csv.ragged_row");
+        assert_eq!(doc.warnings[0].code, "psv.ragged_row");
     }
 
     #[test]

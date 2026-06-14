@@ -13,7 +13,8 @@ use sempack_core::{Extractor, Input, Result};
 use sempack_ir::{Block, DocumentIr, Field};
 use serde_json::Value;
 
-use crate::{doc_id, source};
+use super::json_helpers::{scalar_to_string, value_to_string};
+use crate::{doc_id, extract_filename, source};
 
 pub struct JsonExtractor;
 
@@ -29,12 +30,10 @@ impl Extractor for JsonExtractor {
     fn extract(&self, input: &Input) -> Result<DocumentIr> {
         let mut doc = DocumentIr::new(doc_id(input), source(input));
 
-        // Populate filename metadata.
         if let Some(path) = &input.path {
-            let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
             doc.metadata
                 .extra
-                .insert("filename".into(), filename.to_string());
+                .insert("filename".into(), extract_filename(path).to_string());
         }
 
         let text = input.text();
@@ -141,28 +140,6 @@ fn value_to_block(v: &Value) -> Block {
         scalar => Block::Paragraph {
             text: scalar_to_string(scalar),
         },
-    }
-}
-
-/// Render a scalar JSON value to a human-readable string (no quotes around strings).
-fn scalar_to_string(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Null => "null".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        other => value_to_string(other),
-    }
-}
-
-/// Render any JSON value to a string; nested containers become compact JSON text.
-fn value_to_string(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Null => "null".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        other => serde_json::to_string(other).unwrap_or_else(|_| "?".into()),
     }
 }
 
