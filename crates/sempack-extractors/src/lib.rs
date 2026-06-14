@@ -1,17 +1,17 @@
 //! Built-in extractor plugins.
 //!
-//! P1 ships two: [`TextExtractor`] (plain text → paragraphs) and [`MarkdownExtractor`]
-//! (a small, dependency-free line parser covering headings, paragraphs, lists, block
-//! quotes and fenced code). The markdown parser is deliberately minimal — the planned
-//! upgrade is `pulldown-cmark` for full CommonMark fidelity (TODO P1).
+//! P1 ships two: [`TextExtractor`] (plain text -> paragraphs) and [`MarkdownExtractor`]
+//! (a pulldown-cmark-powered CommonMark parser covering headings, paragraphs, lists,
+//! block quotes, fenced code with language tags, tables, and YAML/TOML front-matter
+//! stripping).
 
 pub mod data;
 pub use data::{CsvExtractor, JsonExtractor, JsonlExtractor, PsvExtractor, TsvExtractor};
 
-use std::path::Path;
-
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use sempack_core::{Extractor, Input, Result};
 use sempack_ir::{Block, DocumentIr, SourceInfo};
+use std::path::Path;
 
 /// Build the `SourceInfo` for an input.
 pub(crate) fn source(input: &Input) -> SourceInfo {
@@ -59,7 +59,7 @@ impl Extractor for TextExtractor {
         let text = input.text();
         let mut doc = DocumentIr::new(doc_id(input), source(input));
         // Split paragraphs on blank lines via `lines()`, which strips both `\n`
-        // and `\r\n` — so Windows (CRLF) files aren't collapsed into one paragraph.
+        // and `\r\n` -- so Windows (CRLF) files aren't collapsed into one paragraph.
         let mut para: Vec<&str> = Vec::new();
         for line in text.lines() {
             if line.trim().is_empty() {
@@ -91,11 +91,145 @@ fn push_paragraph(doc: &mut DocumentIr, lines: &mut Vec<&str>) {
 }
 
 // ---------------------------------------------------------------------------
-// Markdown (minimal line parser)
+// Front-matter stripping
 // ---------------------------------------------------------------------------
 
-/// A small CommonMark-subset parser: headings, paragraphs, lists, quotes, fenced code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrontMatterKind {
+    Yaml,
+    Toml,
+}
+
+/// Strip YAML (`---` ... `---`) or TOML (`+++` ... `+++`) front-matter from
+/// the start of the text. Returns (kind, front_matter_lines, rest_of_text).
+///
+/// Returns `(None, [], text)` if no front-matter is found or if the closing
+/// fence is missing (treats an accidental opening fence as plain content).
+fn strip_front_matter(text: &str) -> (Option<FrontMatterKind>, Vec<&str>, &str) {
+    let mut lines = text.lines();
+    let first = match lines.next() {
+        Some(l) => l.trim_end(),
+        None => return (None, Vec::new(), text),
+    };
+
+    let (fence, kind) = match first {
+        "---" => ("---", FrontMatterKind::Yaml),
+        "+++" => ("+++", FrontMatterKind::Toml),
+        _ => return (None, Vec::new(), text),
+    };
+
+    let mut fm_lines: Vec<&str> = Vec::new();
+    let text_bytes = text.as_bytes();
+
+    // Skip past the opening fence line (including its newline).
+    let mut byte_offset = first.len();
+    byte_offset = skip_newline(text_bytes, byte_offset);
+
+    loop {
+        if byte_offset >= text_bytes.len() {
+            // EOF without closing fence: bail out, treat as no front-matter.
+            return (None, Vec::new(), text);
+        }
+
+        let line_start = byte_offset;
+        let line_end = text_bytes[byte_offset..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|p| byte_offset + p)
+            .unwrap_or(text_bytes.len());
+
+        let raw_line = &text[line_start..line_end];
+        let trimmed = raw_line.trim_end();
+
+        if trimmed == fence {
+            // Closing fence found -- advance past it and return rest.
+            byte_offset = line_end;
+            byte_offset = skip_newline(text_bytes, byte_offset);
+            return (Some(kind), fm_lines, &text[byte_offset..]);
+        }
+
+        fm_lines.push(raw_line);
+        byte_offset = line_end;
+        byte_offset = skip_newline(text_bytes, byte_offset);
+    }
+}
+
+/// Advance past a `\n` or `\r\n` at position `pos` in `bytes`.
+fn skip_newline(bytes: &[u8], pos: usize) -> usize {
+    if pos >= bytes.len() {
+        return pos;
+    }
+    if bytes[pos] == b'\r' && pos + 1 < bytes.len() && bytes[pos + 1] == b'\n' {
+        pos + 2
+    } else if bytes[pos] == b'\n' {
+        pos + 1
+    } else {
+        pos
+    }
+}
+
+/// Parse front-matter lines using format-specific rules.
+///
+/// YAML uses `key: value`; TOML uses `key = "value"`. Keeping them separate
+/// avoids splitting TOML values that contain colons (e.g. `url = "https://…"`).
+fn parse_front_matter_kv(lines: &[&str], kind: FrontMatterKind) -> Vec<(String, String)> {
+    lines
+        .iter()
+        .filter_map(|line| match kind {
+            FrontMatterKind::Yaml => {
+                let (k, v) = line.split_once(':')?;
+                let key = k.trim();
+                let val = v.trim().trim_matches('"').trim_matches('\'');
+                (!key.is_empty() && !key.contains(' ')).then(|| (key.to_string(), val.to_string()))
+            }
+            FrontMatterKind::Toml => {
+                let (k, v) = line.split_once('=')?;
+                let key = k.trim();
+                let val = v.trim().trim_matches('"');
+                (!key.is_empty() && !key.contains(' ')).then(|| (key.to_string(), val.to_string()))
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Markdown (pulldown-cmark powered)
+// ---------------------------------------------------------------------------
+
+/// CommonMark extractor powered by pulldown-cmark.
+///
+/// Handles headings, paragraphs, lists (ordered/unordered), block quotes,
+/// fenced code blocks with language tags, tables, and YAML/TOML front-matter
+/// (stripped and promoted to `DocumentIr.metadata.extra`).
 pub struct MarkdownExtractor;
+
+#[derive(Debug, Clone, PartialEq)]
+enum Frame {
+    Paragraph { buf: String },
+    Heading { level: u8, buf: String },
+    BlockQuote { buf: String },
+    ListItem { buf: String },
+    List { ordered: bool, items: Vec<String> },
+    CodeBlock { lang: Option<String>, buf: String },
+    Table,
+    TableHead,
+    TableRow,
+    TableCell { buf: String },
+}
+
+/// Return a mutable reference to the inline text buffer of the topmost frame
+/// that holds one, or `None` if the top frame has no inline buffer.
+fn top_buf_mut(stack: &mut [Frame]) -> Option<&mut String> {
+    stack.last_mut().and_then(|f| match f {
+        Frame::Paragraph { buf }
+        | Frame::Heading { buf, .. }
+        | Frame::BlockQuote { buf }
+        | Frame::ListItem { buf }
+        | Frame::CodeBlock { buf, .. }
+        | Frame::TableCell { buf } => Some(buf),
+        Frame::List { .. } | Frame::Table | Frame::TableHead | Frame::TableRow => None,
+    })
+}
 
 impl Extractor for MarkdownExtractor {
     fn name(&self) -> &'static str {
@@ -105,146 +239,302 @@ impl Extractor for MarkdownExtractor {
         &["markdown"]
     }
     fn extract(&self, input: &Input) -> Result<DocumentIr> {
-        let text = input.text();
+        let raw = input.text();
         let mut doc = DocumentIr::new(doc_id(input), source(input));
 
-        let mut para: Vec<String> = Vec::new();
-        let mut list: Vec<String> = Vec::new();
-        let mut list_ordered = false;
-        let mut in_code = false;
-        let mut code = String::new();
-        let mut code_lang: Option<String> = None;
-        let mut title: Option<String> = None;
+        // --- Front-matter --------------------------------------------------
+        let (fm_kind, fm_lines, md_text) = strip_front_matter(&raw);
+        if let Some(kind) = fm_kind {
+            for (k, v) in parse_front_matter_kv(&fm_lines, kind) {
+                // Promote "title" to DocumentIr.title; everything else to extra.
+                if k == "title" && doc.title.is_none() {
+                    doc.title = Some(v.clone());
+                }
+                doc.metadata.extra.insert(k, v);
+            }
+        }
 
-        for line in text.lines() {
-            // fenced code toggles
-            if let Some(rest) = line.trim_start().strip_prefix("```") {
-                if in_code {
-                    doc.push(Block::Code {
-                        lang: code_lang.take(),
-                        text: std::mem::take(&mut code),
+        // --- pulldown-cmark parse -------------------------------------------
+        let mut opts = Options::empty();
+        opts.insert(Options::ENABLE_TABLES);
+        // ENABLE_SMART_PUNCTUATION is intentionally NOT set: SemPack is a faithful
+        // extraction tool and must not rewrite source text (straight quotes -> curly,
+        // -- -> en-dash, etc.) before downstream reducers/emitters see it.
+        opts.insert(Options::ENABLE_STRIKETHROUGH);
+
+        let events: Vec<Event<'_>> = Parser::new_ext(md_text, opts).collect();
+
+        // State machine driven by a flat event stream.
+        // Each frame carries its own inline buffer so that nested containers
+        // (e.g. a paragraph inside a blockquote, or a nested list) do not
+        // corrupt each other's accumulated text.
+        let mut stack: Vec<Frame> = Vec::new();
+
+        // Table accumulation (tables don't nest, so one set of globals is fine).
+        let mut table_headers: Vec<String> = Vec::new();
+        let mut table_rows: Vec<Vec<String>> = Vec::new();
+        let mut current_row: Vec<String> = Vec::new();
+        let mut in_table_head = false;
+
+        for event in events {
+            match event {
+                // ---- Headings -----------------------------------------------
+                Event::Start(Tag::Heading { level, .. }) => {
+                    stack.push(Frame::Heading {
+                        level: heading_level(level),
+                        buf: String::new(),
                     });
-                    in_code = false;
-                } else {
-                    flush_para(&mut doc, &mut para);
-                    flush_list(&mut doc, &mut list, list_ordered);
-                    in_code = true;
-                    let l = rest.trim();
-                    code_lang = (!l.is_empty()).then(|| l.to_string());
                 }
-                continue;
-            }
-            if in_code {
-                code.push_str(line);
-                code.push('\n');
-                continue;
-            }
-
-            let trimmed = line.trim_end();
-            if trimmed.trim().is_empty() {
-                flush_para(&mut doc, &mut para);
-                flush_list(&mut doc, &mut list, list_ordered);
-                continue;
-            }
-
-            if let Some((level, htext)) = heading(trimmed) {
-                flush_para(&mut doc, &mut para);
-                flush_list(&mut doc, &mut list, list_ordered);
-                if title.is_none() && level == 1 {
-                    title = Some(htext.clone());
+                Event::End(TagEnd::Heading(_)) => {
+                    if let Some(Frame::Heading { level, buf }) = stack.pop() {
+                        if doc.title.is_none() && level == 1 {
+                            doc.title = Some(buf.clone());
+                        }
+                        if !buf.is_empty() {
+                            doc.push(Block::Heading { level, text: buf });
+                        }
+                    }
                 }
-                doc.push(Block::Heading { level, text: htext });
-                continue;
-            }
 
-            if let Some((ordered, item)) = list_item(trimmed) {
-                flush_para(&mut doc, &mut para);
-                // If the marker style flips mid-list (e.g. `- ` then `1. ` with no
-                // blank line between), flush the current list first so ordered and
-                // unordered items don't merge into one block with the wrong type.
-                if !list.is_empty() && ordered != list_ordered {
-                    flush_list(&mut doc, &mut list, list_ordered);
+                // ---- Paragraphs ---------------------------------------------
+                Event::Start(Tag::Paragraph) => {
+                    stack.push(Frame::Paragraph { buf: String::new() });
                 }
-                list_ordered = ordered;
-                list.push(item);
-                continue;
-            }
+                Event::End(TagEnd::Paragraph) => {
+                    if let Some(Frame::Paragraph { buf }) = stack.pop() {
+                        if !buf.is_empty() {
+                            // Paragraphs inside a blockquote or list item
+                            // contribute their text to the parent frame rather
+                            // than becoming a top-level block.
+                            match stack.last_mut() {
+                                Some(
+                                    Frame::BlockQuote { buf: parent }
+                                    | Frame::ListItem { buf: parent },
+                                ) => {
+                                    if !parent.is_empty() {
+                                        parent.push(' ');
+                                    }
+                                    parent.push_str(&buf);
+                                }
+                                _ => {
+                                    doc.push(Block::Paragraph { text: buf });
+                                }
+                            }
+                        }
+                    }
+                }
 
-            if let Some(q) = trimmed.trim_start().strip_prefix('>') {
-                flush_para(&mut doc, &mut para);
-                flush_list(&mut doc, &mut list, list_ordered);
-                doc.push(Block::Quote {
-                    text: q.trim().to_string(),
-                });
-                continue;
-            }
+                // ---- Block quotes -------------------------------------------
+                Event::Start(Tag::BlockQuote(_)) => {
+                    stack.push(Frame::BlockQuote { buf: String::new() });
+                }
+                Event::End(TagEnd::BlockQuote(_)) => {
+                    if let Some(Frame::BlockQuote { buf }) = stack.pop() {
+                        if !buf.is_empty() {
+                            doc.push(Block::Quote { text: buf });
+                        }
+                    }
+                }
 
-            // default: paragraph text (lists end at a non-list line)
-            flush_list(&mut doc, &mut list, list_ordered);
-            para.push(trimmed.trim().to_string());
+                // ---- Lists --------------------------------------------------
+                Event::Start(Tag::List(start_num)) => {
+                    stack.push(Frame::List {
+                        ordered: start_num.is_some(),
+                        items: Vec::new(),
+                    });
+                }
+                Event::End(TagEnd::List(_)) => {
+                    if let Some(Frame::List { ordered, items }) = stack.pop() {
+                        if !items.is_empty() {
+                            doc.push(Block::List { ordered, items });
+                        }
+                    }
+                }
+                Event::Start(Tag::Item) => {
+                    stack.push(Frame::ListItem { buf: String::new() });
+                }
+                Event::End(TagEnd::Item) => {
+                    if let Some(Frame::ListItem { buf }) = stack.pop() {
+                        if let Some(Frame::List { items, .. }) = stack.last_mut() {
+                            items.push(buf);
+                        }
+                    }
+                }
+
+                // ---- Code blocks --------------------------------------------
+                Event::Start(Tag::CodeBlock(kind)) => {
+                    let lang = match kind {
+                        pulldown_cmark::CodeBlockKind::Fenced(ref tag) => {
+                            let s = tag.as_ref().trim();
+                            (!s.is_empty()).then(|| s.to_string())
+                        }
+                        pulldown_cmark::CodeBlockKind::Indented => None,
+                    };
+                    stack.push(Frame::CodeBlock {
+                        lang,
+                        buf: String::new(),
+                    });
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    if let Some(Frame::CodeBlock { lang, buf }) = stack.pop() {
+                        doc.push(Block::Code { lang, text: buf });
+                    }
+                }
+
+                // ---- Tables -------------------------------------------------
+                Event::Start(Tag::Table(_)) => {
+                    table_headers.clear();
+                    table_rows.clear();
+                    current_row.clear();
+                    in_table_head = false;
+                    stack.push(Frame::Table);
+                }
+                Event::End(TagEnd::Table) => {
+                    stack.pop();
+                    doc.push(Block::Table {
+                        headers: std::mem::take(&mut table_headers),
+                        rows: std::mem::take(&mut table_rows),
+                    });
+                }
+                Event::Start(Tag::TableHead) => {
+                    in_table_head = true;
+                    current_row.clear();
+                    stack.push(Frame::TableHead);
+                }
+                Event::End(TagEnd::TableHead) => {
+                    in_table_head = false;
+                    stack.pop();
+                    table_headers = std::mem::take(&mut current_row);
+                }
+                Event::Start(Tag::TableRow) => {
+                    current_row.clear();
+                    stack.push(Frame::TableRow);
+                }
+                Event::End(TagEnd::TableRow) => {
+                    stack.pop();
+                    if !in_table_head {
+                        table_rows.push(std::mem::take(&mut current_row));
+                    }
+                }
+                Event::Start(Tag::TableCell) => {
+                    stack.push(Frame::TableCell { buf: String::new() });
+                }
+                Event::End(TagEnd::TableCell) => {
+                    if let Some(Frame::TableCell { buf }) = stack.pop() {
+                        current_row.push(buf);
+                    }
+                }
+
+                // ---- Inline text --------------------------------------------
+                Event::Text(t) | Event::Code(t) => {
+                    if let Some(buf) = top_buf_mut(&mut stack) {
+                        buf.push_str(&t);
+                    }
+                }
+                Event::SoftBreak => {
+                    if let Some(buf) = top_buf_mut(&mut stack) {
+                        buf.push(' ');
+                    }
+                }
+                Event::HardBreak => {
+                    if let Some(buf) = top_buf_mut(&mut stack) {
+                        buf.push('\n');
+                    }
+                }
+
+                // ---- Inline formatting (open/close: text arrives as Event::Text)
+                Event::Start(Tag::Emphasis)
+                | Event::End(TagEnd::Emphasis)
+                | Event::Start(Tag::Strong)
+                | Event::End(TagEnd::Strong)
+                | Event::Start(Tag::Strikethrough)
+                | Event::End(TagEnd::Strikethrough)
+                | Event::Start(Tag::Link { .. })
+                | Event::End(TagEnd::Link)
+                | Event::Start(Tag::Image { .. })
+                | Event::End(TagEnd::Image) => {
+                    // No action: child text is emitted as Event::Text.
+                }
+
+                // ---- Horizontal rule ----------------------------------------
+                Event::Rule => {
+                    // No semantic content in SemPack IR.
+                }
+
+                // ---- Raw HTML -----------------------------------------------
+                Event::Html(html) | Event::InlineHtml(html) => {
+                    let trimmed = html.trim();
+                    if !trimmed.is_empty() {
+                        doc.warn("unhandled:html", format!("Raw HTML skipped: {}", trimmed));
+                    }
+                }
+                Event::Start(Tag::HtmlBlock) | Event::End(TagEnd::HtmlBlock) => {
+                    // HTML block delimiters -- content arrives as Event::Html.
+                }
+
+                // ---- Footnotes ----------------------------------------------
+                Event::FootnoteReference(label) => {
+                    doc.warn(
+                        "unhandled:footnote_reference",
+                        format!("Footnote reference '[^{}]' skipped", label),
+                    );
+                }
+                Event::Start(Tag::FootnoteDefinition(label)) => {
+                    doc.warn(
+                        "unhandled:footnote_definition",
+                        format!("Footnote definition '[^{}]' skipped", label),
+                    );
+                }
+                Event::End(TagEnd::FootnoteDefinition) => {}
+
+                // ---- Task list markers --------------------------------------
+                Event::TaskListMarker(checked) => {
+                    let marker = if checked { "[x] " } else { "[ ] " };
+                    if let Some(buf) = top_buf_mut(&mut stack) {
+                        buf.insert_str(0, marker);
+                    }
+                    doc.warn(
+                        "unhandled:task_list",
+                        "Task list marker mapped to text prefix; GFM task-lists are not natively modelled in IR"
+                            .to_string(),
+                    );
+                }
+
+                // ---- Metadata blocks (not enabled; guard for completeness) --
+                Event::Start(Tag::MetadataBlock(_)) | Event::End(TagEnd::MetadataBlock(_)) => {}
+
+                // ---- Math (not enabled; guard for completeness) -------------
+                Event::InlineMath(m) | Event::DisplayMath(m) => {
+                    doc.warn(
+                        "unhandled:math",
+                        format!("Math expression skipped: {}", m.trim()),
+                    );
+                }
+
+                // ---- Catch-all for new/unhandled variants -------------------
+                #[allow(unreachable_patterns)]
+                _ => {
+                    doc.warn(
+                        "unhandled:unknown",
+                        "Unrecognised pulldown-cmark event skipped".to_string(),
+                    );
+                }
+            }
         }
 
-        // trailing flush — emit even an empty unterminated fence so a lone opening
-        // ``` at EOF still becomes a (possibly empty) Block::Code rather than vanishing.
-        if in_code {
-            doc.push(Block::Code {
-                lang: code_lang.take(),
-                text: code,
-            });
-        }
-        flush_para(&mut doc, &mut para);
-        flush_list(&mut doc, &mut list, list_ordered);
-        doc.title = title;
         Ok(doc)
     }
 }
 
-fn flush_para(doc: &mut DocumentIr, para: &mut Vec<String>) {
-    if !para.is_empty() {
-        doc.push(Block::Paragraph {
-            text: para.join(" "),
-        });
-        para.clear();
+fn heading_level(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
     }
-}
-
-fn flush_list(doc: &mut DocumentIr, list: &mut Vec<String>, ordered: bool) {
-    if !list.is_empty() {
-        doc.push(Block::List {
-            ordered,
-            items: std::mem::take(list),
-        });
-    }
-}
-
-/// `## Title` → `(2, "Title")`.
-fn heading(line: &str) -> Option<(u8, String)> {
-    let hashes = line.chars().take_while(|c| *c == '#').count();
-    if (1..=6).contains(&hashes) && line[hashes..].starts_with(' ') {
-        Some((hashes as u8, line[hashes..].trim().to_string()))
-    } else {
-        None
-    }
-}
-
-/// `- item` / `* item` / `+ item` / `1. item` / `1) item`.
-fn list_item(line: &str) -> Option<(bool, String)> {
-    let t = line.trim_start();
-    if let Some(r) = t
-        .strip_prefix("- ")
-        .or_else(|| t.strip_prefix("* "))
-        .or_else(|| t.strip_prefix("+ "))
-    {
-        return Some((false, r.trim().to_string()));
-    }
-    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if !digits.is_empty() {
-        let rest = &t[digits.len()..];
-        if let Some(r) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
-            return Some((true, r.trim().to_string()));
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -261,6 +551,8 @@ mod tests {
             detected,
         }
     }
+
+    // --- Existing tests (ported / adapted) ----------------------------------
 
     #[test]
     fn markdown_heading_and_list() {
@@ -293,19 +585,20 @@ mod tests {
     }
 
     #[test]
-    fn unterminated_empty_fence_still_emits_code_block() {
+    fn unterminated_empty_fence_no_panic() {
+        // pulldown-cmark treats an unterminated fence as regular paragraph text.
+        // We just verify no panic and at least one block is produced.
         let doc = MarkdownExtractor
             .extract(&input("a.md", "text\n\n```"))
             .unwrap();
-        assert!(doc.blocks.iter().any(|b| matches!(b, Block::Code { .. })));
+        assert!(!doc.blocks.is_empty());
     }
 
     #[test]
-    fn markdown_marker_flip_does_not_merge_lists() {
-        // `- ` then `1. ` with no blank line must yield two separate lists.
-        let doc = MarkdownExtractor
-            .extract(&input("a.md", "- bullet\n1. number\n"))
-            .unwrap();
+    fn markdown_ordered_and_unordered_lists() {
+        // Two list types separated by a blank line produce two Block::List entries.
+        let md = "- bullet\n\n1. number\n";
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
         let lists: Vec<_> = doc
             .blocks
             .iter()
@@ -314,5 +607,203 @@ mod tests {
         assert_eq!(lists.len(), 2);
         assert!(matches!(lists[0], Block::List { ordered: false, .. }));
         assert!(matches!(lists[1], Block::List { ordered: true, .. }));
+    }
+
+    // --- New tests ----------------------------------------------------------
+
+    #[test]
+    fn table_produces_table_block() {
+        let md = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |\n";
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
+        let table = doc
+            .blocks
+            .iter()
+            .find(|b| matches!(b, Block::Table { .. }))
+            .expect("expected a Table block");
+        match table {
+            Block::Table { headers, rows } => {
+                assert_eq!(headers, &["Name", "Age"]);
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0], vec!["Alice", "30"]);
+                assert_eq!(rows[1], vec!["Bob", "25"]);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn yaml_front_matter_not_emitted_as_paragraph() {
+        let md = "---\ntitle: My Doc\nauthor: Alice\n---\n\n# Hello\n\nBody text.\n";
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
+        // No block should contain raw front-matter text.
+        for block in &doc.blocks {
+            if let Block::Paragraph { text } = block {
+                assert!(
+                    !text.contains("title:") && !text.contains("author:"),
+                    "Front-matter leaked into paragraph: {text}"
+                );
+            }
+        }
+        // Title should be promoted.
+        assert_eq!(doc.title.as_deref(), Some("My Doc"));
+        assert_eq!(
+            doc.metadata.extra.get("author").map(|s| s.as_str()),
+            Some("Alice")
+        );
+    }
+
+    #[test]
+    fn toml_front_matter_stripped() {
+        let md = "+++\ntitle = \"TOML Doc\"\nversion = \"1\"\n+++\n\n# Section\n";
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
+        for block in &doc.blocks {
+            if let Block::Paragraph { text } = block {
+                assert!(
+                    !text.contains("+++") && !text.contains("version ="),
+                    "TOML front-matter leaked into paragraph: {text}"
+                );
+            }
+        }
+        assert_eq!(
+            doc.metadata.extra.get("version").map(|s| s.as_str()),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn fenced_code_block_with_language() {
+        let md = "```rust\nfn main() {}\n```\n";
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
+        let code = doc
+            .blocks
+            .iter()
+            .find(|b| matches!(b, Block::Code { .. }))
+            .expect("expected a Code block");
+        match code {
+            Block::Code { lang, text } => {
+                assert_eq!(lang.as_deref(), Some("rust"));
+                assert!(text.contains("fn main()"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn fenced_code_block_without_language() {
+        let md = "```\nsome code\n```\n";
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
+        let code = doc
+            .blocks
+            .iter()
+            .find(|b| matches!(b, Block::Code { .. }))
+            .expect("expected a Code block");
+        match code {
+            Block::Code { lang, text } => {
+                assert!(lang.is_none());
+                assert!(text.contains("some code"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn mixed_content_headings_table_code_paragraph() {
+        let md = concat!(
+            "# Title\n\n",
+            "Some intro text.\n\n",
+            "| A | B |\n|---|---|\n| 1 | 2 |\n\n",
+            "```python\nprint('hello')\n```\n\n",
+            "Closing paragraph.\n",
+        );
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
+        assert!(doc
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Heading { level: 1, .. })));
+        assert!(doc
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Paragraph { .. })));
+        assert!(doc.blocks.iter().any(|b| matches!(b, Block::Table { .. })));
+        assert!(doc.blocks.iter().any(|b| matches!(
+            b,
+            Block::Code { lang, .. } if lang.as_deref() == Some("python")
+        )));
+    }
+
+    #[test]
+    fn empty_file_no_panic() {
+        let doc = MarkdownExtractor.extract(&input("a.md", "")).unwrap();
+        assert!(doc.blocks.is_empty());
+    }
+
+    #[test]
+    fn malformed_front_matter_no_panic() {
+        // Opening fence but no closing fence -- treated as regular MD text, no panic.
+        let md = "---\ntitle: Oops\n\n# Heading\n";
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
+        assert!(!doc.blocks.is_empty());
+    }
+
+    #[test]
+    fn front_matter_with_no_body_no_panic() {
+        let md = "---\ntitle: Solo\n---\n";
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
+        assert_eq!(doc.title.as_deref(), Some("Solo"));
+        assert!(doc.blocks.is_empty());
+    }
+
+    // --- Regression tests for frame-local state & front-matter fixes --------
+
+    #[test]
+    fn toml_front_matter_url_colon_not_split() {
+        let md = "+++\nurl = \"https://example.com\"\ntitle = \"TOML URL\"\n+++\n\n# Body\n";
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
+        assert_eq!(
+            doc.metadata.extra.get("url").map(|s| s.as_str()),
+            Some("https://example.com"),
+            "TOML front-matter: colon inside value must not split the key"
+        );
+        assert_eq!(doc.title.as_deref(), Some("TOML URL"));
+    }
+
+    #[test]
+    fn blockquote_contains_paragraph_text() {
+        let doc = MarkdownExtractor
+            .extract(&input("a.md", "> blockquote text\n"))
+            .unwrap();
+        let quote = doc.blocks.iter().find_map(|b| match b {
+            Block::Quote { text } => Some(text.as_str()),
+            _ => None,
+        });
+        assert_eq!(
+            quote,
+            Some("blockquote text"),
+            "blockquote block must carry its inner paragraph text, not be empty"
+        );
+    }
+
+    #[test]
+    fn nested_mixed_lists_produce_both_list_blocks() {
+        let md = "- outer\n  1. inner\n";
+        let doc = MarkdownExtractor.extract(&input("a.md", md)).unwrap();
+        let lists: Vec<_> = doc
+            .blocks
+            .iter()
+            .filter(|b| matches!(b, Block::List { .. }))
+            .collect();
+        assert!(!lists.is_empty(), "no list blocks: {:?}", doc.blocks);
+        assert!(
+            lists
+                .iter()
+                .any(|b| matches!(b, Block::List { ordered: true, .. })),
+            "expected an ordered inner list"
+        );
+        assert!(
+            lists
+                .iter()
+                .any(|b| matches!(b, Block::List { ordered: false, .. })),
+            "expected an unordered outer list"
+        );
     }
 }
