@@ -119,7 +119,9 @@ impl FromStr for Profile {
             "llm" => Ok(Profile::Llm),
             "compact" => Ok(Profile::Compact),
             "debug" => Err("debug profile is not yet available".to_string()),
-            other => Err(format!("unknown profile `{other}` (try: human, llm, compact)")),
+            other => Err(format!(
+                "unknown profile `{other}` (try: human, llm, compact)"
+            )),
         }
     }
 }

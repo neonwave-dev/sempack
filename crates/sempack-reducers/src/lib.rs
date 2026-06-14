@@ -220,11 +220,15 @@ mod tests {
     #[test]
     fn compact_drops_quotes() {
         let mut d = doc(vec![
-            Block::Paragraph { text: "intro".into() },
+            Block::Paragraph {
+                text: "intro".into(),
+            },
             Block::Quote {
                 text: "someone said something".into(),
             },
-            Block::Paragraph { text: "outro".into() },
+            Block::Paragraph {
+                text: "outro".into(),
+            },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
         assert!(
@@ -240,7 +244,9 @@ mod tests {
         let other = "y".repeat(150);
         let mut d = doc(vec![
             Block::Paragraph { text: para.clone() },
-            Block::Paragraph { text: other.clone() },
+            Block::Paragraph {
+                text: other.clone(),
+            },
             Block::Paragraph { text: para.clone() },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
@@ -271,8 +277,12 @@ mod tests {
         let long_a = "x".repeat(150);
         let long_b = "y".repeat(150);
         let mut d = doc(vec![
-            Block::Paragraph { text: long_a.clone() },
-            Block::Paragraph { text: long_b.clone() },
+            Block::Paragraph {
+                text: long_a.clone(),
+            },
+            Block::Paragraph {
+                text: long_b.clone(),
+            },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
         assert_eq!(d.blocks.len(), 2, "long paragraphs must not be merged");
