@@ -210,20 +210,30 @@ fn cmd_extract(
 
     let doc = extractor.extract(&inp)?;
 
-    let mut jsonl = String::new();
-    for block in &doc.blocks {
-        let line = if pretty {
-            serde_json::to_string_pretty(block)?
-        } else {
-            serde_json::to_string(block)?
-        };
-        jsonl.push_str(&line);
-        jsonl.push('\n');
-    }
-
     match &output {
-        Some(p) => std::fs::write(p, &jsonl)?,
-        None => print!("{jsonl}"),
+        Some(p) => {
+            let mut content = String::new();
+            for block in &doc.blocks {
+                let line = if pretty {
+                    serde_json::to_string_pretty(block)?
+                } else {
+                    serde_json::to_string(block)?
+                };
+                content.push_str(&line);
+                content.push('\n');
+            }
+            std::fs::write(p, &content)?;
+        }
+        None => {
+            for block in &doc.blocks {
+                let line = if pretty {
+                    serde_json::to_string_pretty(block)?
+                } else {
+                    serde_json::to_string(block)?
+                };
+                println!("{line}");
+            }
+        }
     }
 
     for w in &doc.warnings {
@@ -352,7 +362,7 @@ fn cmd_stats(input: PathBuf) -> Result<i32, Box<dyn std::error::Error>> {
     );
     println!("Warnings: {}", out.warnings.len());
 
-    Ok(0)
+    Ok(if out.warnings.is_empty() { 0 } else { 1 })
 }
 
 fn string_err(e: String) -> Box<dyn std::error::Error> {

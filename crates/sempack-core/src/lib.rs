@@ -119,7 +119,9 @@ impl FromStr for Profile {
             "llm" => Ok(Profile::Llm),
             "compact" => Ok(Profile::Compact),
             "debug" => Ok(Profile::Debug),
-            other => Err(format!("unknown profile `{other}` (try: human, llm)")),
+            other => Err(format!(
+                "unknown profile `{other}` (try: human, llm, compact)"
+            )),
         }
     }
 }
