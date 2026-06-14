@@ -5,11 +5,14 @@
 //! quotes and fenced code). The markdown parser is deliberately minimal — the planned
 //! upgrade is `pulldown-cmark` for full CommonMark fidelity (TODO P1).
 
+pub mod data;
+pub use data::{CsvExtractor, JsonExtractor, JsonlExtractor, PsvExtractor, TsvExtractor};
+
 use sempack_core::{Extractor, Input, Result};
 use sempack_ir::{Block, DocumentIr, SourceInfo};
 
 /// Build the `SourceInfo` for an input.
-fn source(input: &Input) -> SourceInfo {
+pub(crate) fn source(input: &Input) -> SourceInfo {
     SourceInfo {
         path: input.path.clone(),
         media_type: input.detected.media_type.clone(),
@@ -19,7 +22,7 @@ fn source(input: &Input) -> SourceInfo {
 }
 
 /// Derive a stable document id from the file name (or `"document"`).
-fn doc_id(input: &Input) -> String {
+pub(crate) fn doc_id(input: &Input) -> String {
     input
         .path
         .as_deref()

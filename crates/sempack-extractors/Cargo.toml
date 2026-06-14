@@ -12,3 +12,5 @@ repository.workspace = true
 [dependencies]
 sempack-core = { workspace = true }
 sempack-ir = { workspace = true }
+serde_json = { workspace = true }
+csv = { workspace = true }
