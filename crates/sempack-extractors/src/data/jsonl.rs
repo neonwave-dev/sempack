@@ -25,7 +25,9 @@ impl Extractor for JsonlExtractor {
         // Populate filename metadata.
         if let Some(path) = &input.path {
             let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-            doc.metadata.extra.insert("filename".into(), filename.to_string());
+            doc.metadata
+                .extra
+                .insert("filename".into(), filename.to_string());
         }
 
         let text = input.text();
@@ -129,7 +131,11 @@ mod tests {
         let doc = JsonlExtractor
             .extract(&make_input("data.jsonl", body))
             .unwrap();
-        assert!(doc.warnings.is_empty(), "unexpected warnings: {:?}", doc.warnings);
+        assert!(
+            doc.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            doc.warnings
+        );
         assert_eq!(doc.blocks.len(), 2);
         assert!(matches!(doc.blocks[0], Block::Record { .. }));
         assert_eq!(

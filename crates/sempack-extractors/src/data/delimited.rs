@@ -84,7 +84,9 @@ impl DelimitedExtractor {
         // Populate filename metadata.
         if let Some(path) = &input.path {
             let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-            doc.metadata.extra.insert("filename".into(), filename.to_string());
+            doc.metadata
+                .extra
+                .insert("filename".into(), filename.to_string());
         }
 
         let mut rdr = ReaderBuilder::new()
@@ -97,10 +99,7 @@ impl DelimitedExtractor {
         let headers: Vec<String> = match rdr.headers() {
             Ok(h) => h.iter().map(|s| s.to_string()).collect(),
             Err(e) => {
-                doc.warn(
-                    "csv.read_error",
-                    format!("failed to read headers: {e}"),
-                );
+                doc.warn("csv.read_error", format!("failed to read headers: {e}"));
                 return Ok(doc);
             }
         };
@@ -115,23 +114,16 @@ impl DelimitedExtractor {
                     if n != col_count {
                         doc.warn(
                             "csv.ragged_row",
-                            format!(
-                                "row {} has {n} field(s), expected {col_count}",
-                                row_idx + 2
-                            ),
+                            format!("row {} has {n} field(s), expected {col_count}", row_idx + 2),
                         );
                     }
                     // Pad short rows with empty strings; truncate long ones.
-                    let mut row: Vec<String> =
-                        record.iter().map(|s| s.to_string()).collect();
+                    let mut row: Vec<String> = record.iter().map(|s| s.to_string()).collect();
                     row.resize(col_count, String::new());
                     rows.push(row);
                 }
                 Err(e) => {
-                    doc.warn(
-                        "csv.read_error",
-                        format!("row {}: {e}", row_idx + 2),
-                    );
+                    doc.warn("csv.read_error", format!("row {}: {e}", row_idx + 2));
                 }
             }
         }
@@ -179,7 +171,11 @@ mod tests {
     fn csv_happy_path() {
         let body = "name,age\nAlice,30\nBob,25\n";
         let doc = CsvExtractor.extract(&make_input("data.csv", body)).unwrap();
-        assert!(doc.warnings.is_empty(), "unexpected warnings: {:?}", doc.warnings);
+        assert!(
+            doc.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            doc.warnings
+        );
         assert_eq!(doc.blocks.len(), 1);
         match &doc.blocks[0] {
             Block::Table { headers, rows } => {

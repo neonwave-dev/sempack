@@ -32,7 +32,9 @@ impl Extractor for JsonExtractor {
         // Populate filename metadata.
         if let Some(path) = &input.path {
             let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-            doc.metadata.extra.insert("filename".into(), filename.to_string());
+            doc.metadata
+                .extra
+                .insert("filename".into(), filename.to_string());
         }
 
         let text = input.text();
@@ -182,8 +184,14 @@ mod tests {
     #[test]
     fn json_array_flat_objects_becomes_table() {
         let body = r#"[{"b":2,"a":1},{"a":3,"b":4}]"#;
-        let doc = JsonExtractor.extract(&make_input("data.json", body)).unwrap();
-        assert!(doc.warnings.is_empty(), "unexpected warnings: {:?}", doc.warnings);
+        let doc = JsonExtractor
+            .extract(&make_input("data.json", body))
+            .unwrap();
+        assert!(
+            doc.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            doc.warnings
+        );
         assert_eq!(doc.blocks.len(), 1);
         match &doc.blocks[0] {
             Block::Table { headers, rows } => {
@@ -207,7 +215,9 @@ mod tests {
     #[test]
     fn json_array_mixed_becomes_records() {
         let body = r#"[{"a":1},{"a":2,"b":3}]"#;
-        let doc = JsonExtractor.extract(&make_input("data.json", body)).unwrap();
+        let doc = JsonExtractor
+            .extract(&make_input("data.json", body))
+            .unwrap();
         assert!(doc.warnings.is_empty());
         assert_eq!(doc.blocks.len(), 2);
         assert!(doc.blocks.iter().all(|b| matches!(b, Block::Record { .. })));
@@ -216,7 +226,9 @@ mod tests {
     #[test]
     fn json_object_becomes_single_record() {
         let body = r#"{"name":"Alice","age":30}"#;
-        let doc = JsonExtractor.extract(&make_input("data.json", body)).unwrap();
+        let doc = JsonExtractor
+            .extract(&make_input("data.json", body))
+            .unwrap();
         assert!(doc.warnings.is_empty());
         assert_eq!(doc.blocks.len(), 1);
         match &doc.blocks[0] {
@@ -234,7 +246,9 @@ mod tests {
     #[test]
     fn json_nested_values_flatten_to_json_string() {
         let body = r#"{"outer":{"inner":"x"}}"#;
-        let doc = JsonExtractor.extract(&make_input("data.json", body)).unwrap();
+        let doc = JsonExtractor
+            .extract(&make_input("data.json", body))
+            .unwrap();
         assert!(doc.warnings.is_empty());
         match &doc.blocks[0] {
             Block::Record { fields } => {
