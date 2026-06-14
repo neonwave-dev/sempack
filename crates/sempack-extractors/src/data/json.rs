@@ -29,6 +29,12 @@ impl Extractor for JsonExtractor {
     fn extract(&self, input: &Input) -> Result<DocumentIr> {
         let mut doc = DocumentIr::new(doc_id(input), source(input));
 
+        // Populate filename metadata.
+        if let Some(path) = &input.path {
+            let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
+            doc.metadata.extra.insert("filename".into(), filename.to_string());
+        }
+
         let text = input.text();
         let value: Value = match serde_json::from_str(&text) {
             Ok(v) => v,

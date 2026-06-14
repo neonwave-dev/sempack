@@ -22,6 +22,12 @@ impl Extractor for JsonlExtractor {
     fn extract(&self, input: &Input) -> Result<DocumentIr> {
         let mut doc = DocumentIr::new(doc_id(input), source(input));
 
+        // Populate filename metadata.
+        if let Some(path) = &input.path {
+            let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
+            doc.metadata.extra.insert("filename".into(), filename.to_string());
+        }
+
         let text = input.text();
         let mut line_count = 0usize;
         let mut error_count = 0usize;

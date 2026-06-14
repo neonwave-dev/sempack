@@ -81,6 +81,12 @@ impl DelimitedExtractor {
     fn extract(&self, input: &Input) -> Result<DocumentIr> {
         let mut doc = DocumentIr::new(doc_id(input), source(input));
 
+        // Populate filename metadata.
+        if let Some(path) = &input.path {
+            let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
+            doc.metadata.extra.insert("filename".into(), filename.to_string());
+        }
+
         let mut rdr = ReaderBuilder::new()
             .delimiter(self.delimiter)
             .flexible(true) // allow ragged rows; we warn below
