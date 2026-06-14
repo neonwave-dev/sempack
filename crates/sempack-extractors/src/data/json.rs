@@ -1,9 +1,10 @@
-//! JSON extractor — turns a JSON file into [`Block::Record`] / [`Block::Table`] blocks.
+//! JSON extractor — turns a JSON file into IR blocks.
 //!
 //! Rules:
 //! - JSON array where **all** elements are flat objects with the **same** key set
 //!   → single [`Block::Table`] (headers = sorted keys, rows = values).
-//! - JSON array of any other mix → one [`Block::Record`] per element.
+//! - JSON array of any other mix → one block per element via `value_to_block`
+//!   (objects → [`Block::Record`], arrays → [`Block::List`], scalars → [`Block::Paragraph`]).
 //! - JSON object → single [`Block::Record`].
 //! - JSON scalar (string/number/bool/null) → single [`Block::Paragraph`].
 //! - Nested values are serialized back to compact JSON text.

@@ -1,5 +1,6 @@
-//! JSONL / NDJSON extractor — one [`Block::Record`] per valid JSON line.
+//! JSONL / NDJSON extractor — one block per valid JSON line.
 //!
+//! JSON objects → [`Block::Record`]; arrays → [`Block::List`]; scalars → [`Block::Paragraph`].
 //! Bad lines emit `"jsonl.bad_line"` warnings; the rest of the file is still processed.
 
 use sempack_core::{Extractor, Input, Result};
@@ -65,7 +66,7 @@ impl Extractor for JsonlExtractor {
     }
 }
 
-/// Convert a JSON value to a Block. Objects → Record; others → Paragraph.
+/// Convert a JSON value to a Block. Objects → Record; arrays → List; scalars → Paragraph.
 fn json_value_to_block(v: &Value) -> Block {
     match v {
         Value::Object(map) => {
