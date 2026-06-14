@@ -157,6 +157,7 @@ dependencies = [
  "sempack-ir",
  "sempack-reducers",
  "sempack-tokenizers",
+ "serde_json",
 ]
 
 [[package]]
