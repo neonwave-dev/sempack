@@ -1,0 +1,16 @@
+[package]
+name = "sempack-extractors"
+description = "Built-in SemPack extractor plugins (P1: text, markdown)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["text"]
+# Each future format group becomes its own gate (data, web, office, pdf, …).
+text = []
+
+[dependencies]
+sempack-core = { workspace = true }
+sempack-ir = { workspace = true }

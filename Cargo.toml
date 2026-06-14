@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/neonwave-dev/sempack"
+authors = ["neonwave"]
+rust-version = "1.80"
+
+[workspace.dependencies]
+# external
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+unicode-normalization = "0.1"
+
+# internal (path)
+sempack-ir = { path = "crates/sempack-ir" }
+sempack-core = { path = "crates/sempack-core" }
+sempack-extractors = { path = "crates/sempack-extractors" }
+sempack-reducers = { path = "crates/sempack-reducers" }
+sempack-emitters = { path = "crates/sempack-emitters" }
+sempack-tokenizers = { path = "crates/sempack-tokenizers" }
+
+[profile.release]
+lto = "thin"
+strip = true

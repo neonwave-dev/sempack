@@ -1,0 +1,13 @@
+[package]
+name = "sempack-core"
+description = "SemPack orchestration: detection, filetype router, plugin registries, pipeline."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sempack-ir = { workspace = true }
+sempack-tokenizers = { workspace = true }
+thiserror = { workspace = true }
+unicode-normalization = { workspace = true }

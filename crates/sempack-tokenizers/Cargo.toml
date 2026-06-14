@@ -1,0 +1,9 @@
+[package]
+name = "sempack-tokenizers"
+description = "Approximate token counting for SemPack metrics."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

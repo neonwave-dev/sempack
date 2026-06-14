@@ -1,0 +1,11 @@
+[package]
+name = "sempack-reducers"
+description = "SemPack reducer plugins / compression profiles (P1: human, llm)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sempack-core = { workspace = true }
+sempack-ir = { workspace = true }
