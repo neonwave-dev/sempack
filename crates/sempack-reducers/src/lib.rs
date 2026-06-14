@@ -12,7 +12,9 @@ fn collapse(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Normalize whitespace in every text-bearing block (code is left untouched).
+/// Collapse runs of whitespace in the prose blocks (paragraph / heading / quote /
+/// list items). Code blocks and structured blocks (table / record / unsupported) are
+/// left as-is, and container blocks are not recursed into.
 fn collapse_ws(doc: &mut DocumentIr) {
     for b in &mut doc.blocks {
         match b {

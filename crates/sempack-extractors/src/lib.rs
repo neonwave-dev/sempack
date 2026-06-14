@@ -171,8 +171,9 @@ impl Extractor for MarkdownExtractor {
             para.push(trimmed.trim().to_string());
         }
 
-        // trailing flush
-        if in_code && !code.is_empty() {
+        // trailing flush — emit even an empty unterminated fence so a lone opening
+        // ``` at EOF still becomes a (possibly empty) Block::Code rather than vanishing.
+        if in_code {
             doc.push(Block::Code {
                 lang: code_lang.take(),
                 text: code,
@@ -276,6 +277,14 @@ mod tests {
             .extract(&input("a.txt", "first\r\n\r\nsecond\r\n\r\nthird"))
             .unwrap();
         assert_eq!(doc.blocks.len(), 3);
+    }
+
+    #[test]
+    fn unterminated_empty_fence_still_emits_code_block() {
+        let doc = MarkdownExtractor
+            .extract(&input("a.md", "text\n\n```"))
+            .unwrap();
+        assert!(doc.blocks.iter().any(|b| matches!(b, Block::Code { .. })));
     }
 
     #[test]

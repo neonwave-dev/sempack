@@ -6,10 +6,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[features]
-default = ["text"]
-# Each future format group becomes its own gate (data, web, office, pdf, …).
-text = []
+# Feature gates (data / web / office / pdf / …) will be added here once extractors
+# are actually gated; omitted for now so the manifest doesn't advertise a no-op flag.
 
 [dependencies]
 sempack-core = { workspace = true }
