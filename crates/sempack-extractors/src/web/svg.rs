@@ -193,9 +193,7 @@ mod tests {
         );
         let doc = SvgExtractor.extract(&input("blank.svg", svg)).unwrap();
         assert!(
-            doc.warnings
-                .iter()
-                .any(|w| w.code == "svg.no_text_content"),
+            doc.warnings.iter().any(|w| w.code == "svg.no_text_content"),
             "expected svg.no_text_content warning"
         );
     }

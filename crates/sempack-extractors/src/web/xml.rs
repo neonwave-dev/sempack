@@ -43,10 +43,8 @@ impl Extractor for XmlExtractor {
                         .attributes()
                         .filter_map(|a| a.ok())
                         .map(|a| {
-                            let key =
-                                String::from_utf8_lossy(a.key.as_ref()).to_string();
-                            let val =
-                                String::from_utf8_lossy(a.value.as_ref()).to_string();
+                            let key = String::from_utf8_lossy(a.key.as_ref()).to_string();
+                            let val = String::from_utf8_lossy(a.value.as_ref()).to_string();
                             format!("{key}={val}")
                         })
                         .collect::<Vec<_>>()
@@ -99,10 +97,8 @@ impl Extractor for XmlExtractor {
                         .attributes()
                         .filter_map(|a| a.ok())
                         .map(|a| {
-                            let key =
-                                String::from_utf8_lossy(a.key.as_ref()).to_string();
-                            let val =
-                                String::from_utf8_lossy(a.value.as_ref()).to_string();
+                            let key = String::from_utf8_lossy(a.key.as_ref()).to_string();
+                            let val = String::from_utf8_lossy(a.value.as_ref()).to_string();
                             format!("{key}={val}")
                         })
                         .collect();
@@ -125,7 +121,10 @@ impl Extractor for XmlExtractor {
                 Err(e) => {
                     doc.warn(
                         "xml.malformed",
-                        format!("XML parse error at position {}: {e}", reader.error_position()),
+                        format!(
+                            "XML parse error at position {}: {e}",
+                            reader.error_position()
+                        ),
                     );
                     break;
                 }
@@ -181,9 +180,15 @@ mod tests {
             .collect();
         assert_eq!(records.len(), 2);
         if let Block::Record { fields } = &records[0] {
-            let tag = fields.iter().find(|f| f.key == "tag").map(|f| f.value.as_str());
+            let tag = fields
+                .iter()
+                .find(|f| f.key == "tag")
+                .map(|f| f.value.as_str());
             assert_eq!(tag, Some("item"));
-            let text = fields.iter().find(|f| f.key == "text").map(|f| f.value.as_str());
+            let text = fields
+                .iter()
+                .find(|f| f.key == "text")
+                .map(|f| f.value.as_str());
             assert_eq!(text, Some("First"));
         }
     }

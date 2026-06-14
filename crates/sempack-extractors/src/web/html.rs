@@ -8,7 +8,18 @@ use super::super::{doc_id, source};
 
 const STRIP_TAGS: &[&str] = &["script", "style", "nav", "header", "footer", "aside"];
 const BLOCK_TAGS: &[&str] = &[
-    "h1", "h2", "h3", "h4", "h5", "h6", "p", "pre", "table", "ul", "ol", "blockquote",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "p",
+    "pre",
+    "table",
+    "ul",
+    "ol",
+    "blockquote",
 ];
 
 pub struct HtmlExtractor;
@@ -99,14 +110,11 @@ fn emit_block(tag: &str, el: ElementRef, doc: &mut DocumentIr) {
         "pre" => {
             let code_sel = Selector::parse("code").unwrap();
             let (lang, text) = if let Some(code_el) = el.select(&code_sel).next() {
-                let lang = code_el
-                    .value()
-                    .attr("class")
-                    .and_then(|c| {
-                        c.split_whitespace()
-                            .find(|cls| cls.starts_with("language-"))
-                            .map(|cls| cls["language-".len()..].to_string())
-                    });
+                let lang = code_el.value().attr("class").and_then(|c| {
+                    c.split_whitespace()
+                        .find(|cls| cls.starts_with("language-"))
+                        .map(|cls| cls["language-".len()..].to_string())
+                });
                 (lang, collect_text(code_el))
             } else {
                 (None, collect_text(el))
