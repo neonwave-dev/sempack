@@ -1,11 +1,6 @@
 # Draft-gated CI. Draft PRs are skipped; marking a PR "Ready for review"
 # (what the ship-ready skill does) triggers this run, which watch-ci then polls.
-# The job name `ci` is the status-check context referenced by branch protection —
-# keep them in sync.
-#
-# Adapted from the default pnpm template to this Rust workspace (cargo fmt/clippy/
-# test/build). Trigger is PR-only for now; add `push: branches: [main]` once the
-# crates live on main and a push build is worth running.
+# Job names match the org ruleset check contexts: "Rust" and "TypeScript".
 name: CI
 
 on:
@@ -24,10 +19,9 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  ci:
-    name: ci
+  rust:
+    name: Rust
     runs-on: ubuntu-latest
-    # Skip draft PRs.
     if: github.event.pull_request.draft == false
     steps:
       - uses: actions/checkout@v4
@@ -51,3 +45,31 @@ jobs:
 
       - name: Build
         run: cargo build --all --all-features
+
+  typescript:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false && hashFiles('pnpm-lock.yaml') != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint:ts
+
+      - name: Build
+        run: pnpm build
