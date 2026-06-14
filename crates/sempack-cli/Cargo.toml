@@ -18,3 +18,4 @@ sempack-reducers = { workspace = true }
 sempack-emitters = { workspace = true }
 sempack-tokenizers = { workspace = true }
 clap = { workspace = true }
+serde_json = { workspace = true }
