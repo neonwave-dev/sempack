@@ -18,6 +18,8 @@ csv = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 unicode-normalization = "0.1"
+scraper = "0.20"
+quick-xml = "0.36"
 
 # internal (path)
 sempack-ir = { path = "crates/sempack-ir" }

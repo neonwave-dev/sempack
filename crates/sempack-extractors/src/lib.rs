@@ -4,6 +4,9 @@
 //! (a pulldown-cmark-powered CommonMark parser covering headings, paragraphs, lists,
 //! block quotes, fenced code with language tags, tables, and YAML/TOML front-matter
 //! stripping).
+//!
+//! The `web` feature (on by default) adds [`HtmlExtractor`], [`XmlExtractor`], and
+//! [`SvgExtractor`] using `scraper` and `quick-xml`.
 
 pub mod data;
 pub use data::{CsvExtractor, JsonExtractor, JsonlExtractor, PsvExtractor, TsvExtractor};
@@ -12,6 +15,12 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use sempack_core::{Extractor, Input, Result};
 use sempack_ir::{Block, DocumentIr, SourceInfo};
 use std::path::Path;
+
+#[cfg(feature = "web")]
+pub mod web;
+
+#[cfg(feature = "web")]
+pub use web::{HtmlExtractor, SvgExtractor, XmlExtractor};
 
 /// Build the `SourceInfo` for an input.
 pub(crate) fn source(input: &Input) -> SourceInfo {
