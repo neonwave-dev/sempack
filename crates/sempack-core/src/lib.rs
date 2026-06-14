@@ -75,6 +75,7 @@ pub fn detect(path: Option<&str>, bytes: &[u8]) -> Detected {
         Some("jsonl") | Some("ndjson") => ("jsonl", ContentClass::Text, "application/x-ndjson"),
         Some("csv") => ("csv", ContentClass::Text, "text/csv"),
         Some("tsv") => ("tsv", ContentClass::Text, "text/tab-separated-values"),
+        Some("psv") => ("psv", ContentClass::Text, "text/plain"),
         Some("html") | Some("htm") => ("html", ContentClass::Text, "text/html"),
         Some("xml") => ("xml", ContentClass::Text, "application/xml"),
         Some("svg") => ("svg", ContentClass::Text, "image/svg+xml"),
@@ -118,7 +119,7 @@ impl FromStr for Profile {
             "human" => Ok(Profile::Human),
             "llm" => Ok(Profile::Llm),
             "compact" => Ok(Profile::Compact),
-            "debug" => Ok(Profile::Debug),
+            "debug" => Err("debug profile is not yet available".to_string()),
             other => Err(format!(
                 "unknown profile `{other}` (try: human, llm, compact)"
             )),
@@ -409,10 +410,12 @@ mod tests {
     #[test]
     fn profile_and_format_parse() {
         assert_eq!("llm".parse::<Profile>().unwrap(), Profile::Llm);
+        assert_eq!("compact".parse::<Profile>().unwrap(), Profile::Compact);
         assert_eq!(
             "md".parse::<OutputFormat>().unwrap(),
             OutputFormat::Markdown
         );
         assert!("nope".parse::<Profile>().is_err());
+        assert!("debug".parse::<Profile>().is_err());
     }
 }
