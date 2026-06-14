@@ -33,6 +33,9 @@ impl Extractor for SvgExtractor {
 
         // Track whether we are inside a text-bearing element.
         let mut in_text_tag: Option<String> = None;
+        // Depth counter so nested tags (e.g. <tspan> inside <text>) don't
+        // prematurely flush or reset state on intermediate End events.
+        let mut text_nesting: u32 = 0;
         let mut current_text = String::new();
         let mut found_any = false;
 
@@ -56,8 +59,15 @@ impl Extractor for SvgExtractor {
                     }
 
                     if TEXT_TAGS.contains(&tag.as_str()) {
-                        in_text_tag = Some(tag);
-                        current_text.clear();
+                        if in_text_tag.is_none() {
+                            in_text_tag = Some(tag);
+                            current_text.clear();
+                            text_nesting = 1;
+                        } else {
+                            text_nesting += 1;
+                        }
+                    } else if in_text_tag.is_some() {
+                        text_nesting += 1;
                     }
                 }
                 Ok(Event::Text(ref e)) => {
@@ -74,13 +84,16 @@ impl Extractor for SvgExtractor {
                 }
                 Ok(Event::End(_)) => {
                     if in_text_tag.is_some() {
-                        let t = current_text.trim().to_string();
-                        if !t.is_empty() {
-                            doc.push(Block::Paragraph { text: t });
-                            found_any = true;
+                        text_nesting -= 1;
+                        if text_nesting == 0 {
+                            let t = current_text.trim().to_string();
+                            if !t.is_empty() {
+                                doc.push(Block::Paragraph { text: t });
+                                found_any = true;
+                            }
+                            in_text_tag = None;
+                            current_text.clear();
                         }
-                        in_text_tag = None;
-                        current_text.clear();
                     }
                 }
                 Ok(Event::Empty(ref e)) => {
@@ -214,5 +227,44 @@ mod tests {
     fn svg_empty_file() {
         let doc = SvgExtractor.extract(&input("empty.svg", "")).unwrap();
         assert!(doc.warnings.iter().any(|w| w.code == "svg.no_text_content"));
+    }
+
+    #[test]
+    fn svg_tspan_inside_text_accumulates_all_text() {
+        // <tspan> inside <text> must not prematurely flush or reset the buffer.
+        let svg = concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">\n",
+            "  <text>Hello <tspan>world</tspan>!</text>\n",
+            "</svg>",
+        );
+        let doc = SvgExtractor.extract(&input("nested.svg", svg)).unwrap();
+        let text = doc.plain_text();
+        // All three pieces must survive into the same block (or adjacent blocks
+        // that together contain all three strings).
+        assert!(
+            text.contains("Hello") && text.contains("world"),
+            "expected both 'Hello' and 'world' in extracted text, got: {text:?}"
+        );
+        assert!(
+            doc.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            doc.warnings
+        );
+    }
+
+    #[test]
+    fn svg_xml_entities_in_attributes_unescaped() {
+        // aria-label containing XML entities must be unescaped.
+        let svg = concat!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"\n",
+            "     aria-label=\"A &amp; B\">\n",
+            "</svg>",
+        );
+        let doc = SvgExtractor.extract(&input("entities.svg", svg)).unwrap();
+        let text = doc.plain_text();
+        assert!(
+            text.contains("A & B"),
+            "expected unescaped '&', got: {text:?}"
+        );
     }
 }

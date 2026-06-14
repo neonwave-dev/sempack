@@ -44,7 +44,7 @@ impl Extractor for XmlExtractor {
                         .filter_map(|a| a.ok())
                         .map(|a| {
                             let key = String::from_utf8_lossy(a.key.as_ref()).to_string();
-                            let val = String::from_utf8_lossy(a.value.as_ref()).to_string();
+                            let val = a.unescape_value().unwrap_or_default().to_string();
                             format!("{key}={val}")
                         })
                         .collect::<Vec<_>>()
@@ -98,7 +98,7 @@ impl Extractor for XmlExtractor {
                         .filter_map(|a| a.ok())
                         .map(|a| {
                             let key = String::from_utf8_lossy(a.key.as_ref()).to_string();
-                            let val = String::from_utf8_lossy(a.value.as_ref()).to_string();
+                            let val = a.unescape_value().unwrap_or_default().to_string();
                             format!("{key}={val}")
                         })
                         .collect();
@@ -220,5 +220,33 @@ mod tests {
             doc.metadata.extra.get("root_element").map(|s| s.as_str()),
             Some("catalog")
         );
+    }
+
+    #[test]
+    fn xml_attribute_entities_unescaped() {
+        // Attribute values containing XML entities must be unescaped.
+        let xml = r#"<root><item id="a&amp;b" name="&lt;x&gt;">text</item></root>"#;
+        let doc = XmlExtractor.extract(&input("entities.xml", xml)).unwrap();
+        let record = doc
+            .blocks
+            .iter()
+            .find(|b| matches!(b, Block::Record { .. }))
+            .expect("expected at least one Record");
+        if let Block::Record { fields } = record {
+            let attrs_field = fields
+                .iter()
+                .find(|f| f.key == "attrs")
+                .expect("no attrs field");
+            assert!(
+                attrs_field.value.contains("a&b"),
+                "expected unescaped '&' in attrs, got: {:?}",
+                attrs_field.value
+            );
+            assert!(
+                attrs_field.value.contains("<x>"),
+                "expected unescaped '<>' in attrs, got: {:?}",
+                attrs_field.value
+            );
+        }
     }
 }
