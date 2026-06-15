@@ -1,5 +1,5 @@
-//! Reducer plugins — the compression profiles.
-//
+﻿//! Reducer plugins — the compression profiles.
+//!
 //! P1 ships two. Both clean whitespace and drop empty blocks; `llm` additionally
 //! squeezes structure for token economy. The profile set widens later (`compact`
 //! soon, `debug` dev-flag, `rag` deferred) — each is just another [`Reducer`].
@@ -100,7 +100,8 @@ fn is_record_outlier(fields: &[Field]) -> bool {
 /// `outlier_count` — rescued outliers beyond the first-N window
 fn sentinel_text(total_rows: usize, kept: usize, outlier_count: usize) -> String {
     let omitted = total_rows.saturating_sub(kept);
-    format!("[{omitted} rows omitted — {kept} shown including {outlier_count} outlier rows]")
+    let outlier_label = if outlier_count == 1 { "row" } else { "rows" };
+    format!("[{omitted} rows omitted — {kept} shown including {outlier_count} outlier {outlier_label}]")
 }
 
 /// Trim large JSON arrays in a document down to a representative sample.
@@ -110,7 +111,7 @@ fn sentinel_text(total_rows: usize, kept: usize, outlier_count: usize) -> String
 /// - the row/record count exceeds `keep_n`.
 ///
 /// Handles two IR shapes produced by JSON/JSONL extraction:
-/// - `Block::Table` (uniform JSON arrays via `try_table`) — rows trimmed in-place.
+/// - `Block::Table` (uniform JSON arrays via `try_table`) — rebuilt with a trimmed row set and sentinel.
 /// - Contiguous runs of `Block::Record` blocks (mixed JSON arrays + JSONL) — the
 ///   run is sliced, and a sentinel paragraph appended after the run.
 ///
@@ -439,7 +440,7 @@ mod tests {
         // A list whose items are all whitespace must be dropped, not emitted as `- `.
         let mut d = doc(vec![Block::List {
             ordered: false,
-            items: vec!["  ".into(), "real".into(), "	".into()],
+            items: vec!["  ".into(), "real".into(), "\t".into()],
         }]);
         HumanReducer.reduce(&mut d).unwrap();
         match d.blocks.as_slice() {
@@ -673,7 +674,7 @@ mod tests {
         match &d.blocks[1] {
             Block::Paragraph { text } => {
                 // 30 total, 21 kept (20 first-N + 1 outlier), 1 outlier.
-                assert_eq!(text, "[9 rows omitted — 21 shown including 1 outlier rows]");
+                assert_eq!(text, "[9 rows omitted — 21 shown including 1 outlier row]");
             }
             other => panic!("expected sentinel Paragraph, got {other:?}"),
         }
@@ -786,7 +787,7 @@ mod tests {
         }
         match &d.blocks[21] {
             Block::Paragraph { text } => {
-                assert_eq!(text, "[9 rows omitted — 21 shown including 1 outlier rows]");
+                assert_eq!(text, "[9 rows omitted — 21 shown including 1 outlier row]");
             }
             other => panic!("expected sentinel Paragraph, got {other:?}"),
         }
