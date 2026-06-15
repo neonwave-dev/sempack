@@ -91,16 +91,14 @@ fn is_stack_trace_line(trimmed: &str) -> bool {
         return true;
     }
     // C/GDB-style frame pointers: "0x00007f..." or "#0  0x..."
-    if trimmed.starts_with("0x") || trimmed.starts_with('#') {
+    // Require `#` followed by a digit to avoid false-positives on shell comments/prompts.
+    if trimmed.starts_with("0x")
+        || (trimmed.starts_with('#') && trimmed[1..].starts_with(|c: char| c.is_ascii_digit()))
+    {
         return true;
     }
     // Rust/cargo backtrace: "   N: symbol" where N is a digit
-    if trimmed
-        .chars()
-        .next()
-        .map_or(false, |c| c.is_ascii_digit())
-        && trimmed.contains(": ")
-    {
+    if trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) && trimmed.contains(": ") {
         return true;
     }
     false
@@ -191,9 +189,7 @@ fn strip_timestamp(line: &str) -> &str {
     }
 
     // Bare numeric counter at start: "12345 rest"
-    let digits_end = s
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(s.len());
+    let digits_end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
     if digits_end > 0 && digits_end < s.len() && s.as_bytes()[digits_end] == b' ' {
         return &s[digits_end + 1..];
     }
@@ -239,7 +235,11 @@ fn skip_tz_offset(s: &str) -> &str {
     }
     if s.starts_with(['+', '-']) && s.len() >= 5 {
         // +HH:MM or +HHMM
-        let offset_len = if s.as_bytes().get(3) == Some(&b':') { 6 } else { 5 };
+        let offset_len = if s.as_bytes().get(3) == Some(&b':') {
+            6
+        } else {
+            5
+        };
         return &s[offset_len.min(s.len())..];
     }
     s
@@ -274,14 +274,23 @@ fn line_sig(trimmed: &str) -> String {
 ///    `"console"`, `"sh"`, `"bash"`, `"shell"`, `"output"`, `"plaintext"`.
 ///    Language hints that name real programming languages (e.g. `"rust"`,
 ///    `"python"`, `"javascript"`) disqualify the block immediately.
-/// 2. At least 20% of lines (minimum 2 lines) match a log-line pattern.
+/// 2. At least one line matches a log-line pattern (>=20% when the block has
+///    5+ lines; a single matching line suffices for 2-4 line blocks).
 fn is_log_block(lang: Option<&str>, text: &str) -> bool {
     // Check language hint first — real source code languages are disqualified.
     match lang {
         Some(l) => {
             let l = l.to_ascii_lowercase();
             let log_langs: &[&str] = &[
-                "text", "log", "console", "sh", "bash", "shell", "output", "plaintext", "plain",
+                "text",
+                "log",
+                "console",
+                "sh",
+                "bash",
+                "shell",
+                "output",
+                "plaintext",
+                "plain",
                 "txt",
             ];
             if !log_langs.contains(&l.as_str()) {
@@ -328,6 +337,7 @@ fn reduce_log_text(text: &str) -> String {
     // run (timestamp-stripped, digits normalised to 'N').
     let mut prev_sig: Option<String> = None;
     let mut run_count: usize = 0; // consecutive similar-line count
+    let mut prev_was_dropped = false; // true if prev_sig came from a dropped DEBUG/TRACE line
 
     let flush_run = |output: &mut Vec<String>, count: usize| {
         if count > 0 {
@@ -369,6 +379,7 @@ fn reduce_log_text(text: &str) -> String {
                         prev_sig = Some(sig);
                     }
                 }
+                prev_was_dropped = true;
                 continue;
             }
             _ => {}
@@ -377,18 +388,21 @@ fn reduce_log_text(text: &str) -> String {
         // (c) Deduplication of kept lines (ERROR/WARN/INFO/Unknown).
         let sig = line_sig(trimmed);
         if let Some(ps) = &prev_sig {
-            if *ps == sig {
+            // Only suppress if the previous sig also came from a kept line —
+            // never suppress a kept line because a dropped DEBUG/TRACE had the same sig.
+            if *ps == sig && !prev_was_dropped {
                 // Similar content as previous kept line — suppress.
                 run_count += 1;
                 continue;
             }
         }
-        // Different line: flush any accumulated run, then emit this line.
+        // Different line (or previous was dropped): flush any accumulated run, then emit.
         if run_count > 0 {
             flush_run(&mut output, run_count);
             run_count = 0;
         }
         prev_sig = Some(sig);
+        prev_was_dropped = false;
         output.push((*line).to_owned());
     }
 
@@ -397,7 +411,11 @@ fn reduce_log_text(text: &str) -> String {
         flush_run(&mut output, run_count);
     }
 
-    output.join("\n")
+    let mut result = output.join("\n");
+    if text.ends_with('\n') {
+        result.push('\n');
+    }
+    result
 }
 
 /// Apply log-aware reduction to every `Code` block that heuristically looks like
@@ -1067,10 +1085,9 @@ Jan 15 12:00:20 host sshd[1234]: ERROR Connection reset by peer";
         let mut d = doc(vec![code_block(Some("python"), py_code)]);
         LlmReducer.reduce(&mut d).unwrap();
         match &d.blocks[0] {
-            Block::Code { text, .. } => assert_eq!(
-                text, py_code,
-                "python source must not be log-reduced"
-            ),
+            Block::Code { text, .. } => {
+                assert_eq!(text, py_code, "python source must not be log-reduced")
+            }
             _ => panic!("expected Code block"),
         }
     }
