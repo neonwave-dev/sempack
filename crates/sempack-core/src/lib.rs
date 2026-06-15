@@ -1,12 +1,12 @@
-//! sempack-core — the engine.
+//! sempack-core â€” the engine.
 //!
 //! Responsibilities: model the [`Input`], [`detect`] its format, **route** it to the
 //! text or image pipeline, hold the three plugin [`Registry`]s (extractors, reducers,
 //! emitters), and [`run`] the pipeline:
 //!
 //! ```text
-//! detect ─▶ ROUTER ─┬─ text  ─▶ extract ─▶ normalize(NFC) ─▶ reduce ─▶ emit
-//!                   └─ image ─▶ (P6 — not built yet)
+//! detect â”€â–¶ ROUTER â”€â”¬â”€ text  â”€â–¶ extract â”€â–¶ normalize(NFC) â”€â–¶ reduce â”€â–¶ emit
+//!                   â””â”€ image â”€â–¶ (P6 â€” not built yet)
 //! ```
 //!
 //! Concrete plugins live in the sibling crates and are wired together by the CLI.
@@ -127,6 +127,18 @@ impl FromStr for Profile {
     }
 }
 
+impl Profile {
+    /// Canonical lowercase string representation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Profile::Human => "human",
+            Profile::Llm => "llm",
+            Profile::Compact => "compact",
+            Profile::Debug => "debug",
+        }
+    }
+}
+
 /// Serialization target (which emitter to run).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -153,6 +165,19 @@ impl FromStr for OutputFormat {
     }
 }
 
+impl OutputFormat {
+    /// Canonical lowercase string representation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OutputFormat::Markdown => "markdown",
+            OutputFormat::Jsonl => "jsonl",
+            OutputFormat::Ndjson => "ndjson",
+            OutputFormat::Text => "text",
+            OutputFormat::Html => "html",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Plugin traits
 // ---------------------------------------------------------------------------
@@ -165,7 +190,7 @@ pub struct Input {
 }
 
 impl Input {
-    /// The raw bytes as text (lossy — invalid UTF-8 becomes U+FFFD).
+    /// The raw bytes as text (lossy â€” invalid UTF-8 becomes U+FFFD).
     pub fn text(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.bytes)
     }
@@ -179,11 +204,24 @@ pub trait Extractor: Send + Sync {
     fn extract(&self, input: &Input) -> Result<DocumentIr>;
 }
 
+/// A single action performed by a reducer, used to build `--explain` output.
+#[derive(Debug, Clone)]
+pub struct ReductionEvent {
+    /// Short name of the reducer that fired (e.g. `"human"`, `"llm"`).
+    pub reducer: &'static str,
+    /// Human-readable description of what changed (e.g. `"dropped 3 empty blocks"`).
+    pub detail: String,
+}
+
 /// Mutates a [`DocumentIr`] in place according to a [`Profile`]. Must not serialize.
+///
+/// Returns the list of [`ReductionEvent`]s describing changes that were made.
+/// Callers can use these to build dry-run / explain output. Operations that
+/// changed zero items should not emit an event (only "fired" operations appear).
 pub trait Reducer: Send + Sync {
     fn name(&self) -> &'static str;
     fn profile(&self) -> Profile;
-    fn reduce(&self, doc: &mut DocumentIr) -> Result<()>;
+    fn reduce(&self, doc: &mut DocumentIr) -> Result<Vec<ReductionEvent>>;
 }
 
 /// Serializes a [`DocumentIr`] to a string in one [`OutputFormat`]. Must not extract.
@@ -262,13 +300,17 @@ pub struct Output {
     pub bytes_out: u64,
     pub tokens_in: usize,
     pub tokens_out: usize,
+    pub blocks_in: usize,
+    pub blocks_out: usize,
     pub warnings: Vec<Warning>,
+    /// Events emitted by the reducer — one per sub-operation that changed >=1 item.
+    pub events: Vec<ReductionEvent>,
 }
 
-/// Run the full pipeline: route → extract → normalize → reduce → emit.
+/// Run the full pipeline: route â†’ extract â†’ normalize â†’ reduce â†’ emit.
 pub fn run(reg: &Registry, input: Input, profile: Profile, format: OutputFormat) -> Result<Output> {
     let bytes_in = input.bytes.len() as u64;
-    // Baseline metrics reflect what an agent would consume if it read the raw file —
+    // Baseline metrics reflect what an agent would consume if it read the raw file â€”
     // so the before/after compares the original input against the compressed output.
     let tokens_in = sempack_tokenizers::approx_tokens(&input.text());
 
@@ -298,8 +340,10 @@ pub fn run(reg: &Registry, input: Input, profile: Profile, format: OutputFormat)
     normalize_nfc(&mut doc);
 
     // --- Reduce ------------------------------------------------------------
+    let blocks_in = doc.blocks.len();
     let reducer = reg.find_reducer(profile).ok_or(Error::NoReducer(profile))?;
-    reducer.reduce(&mut doc)?;
+    let events = reducer.reduce(&mut doc)?;
+    let blocks_out = doc.blocks.len();
 
     // --- Emit --------------------------------------------------------------
     let emitter = reg.find_emitter(format).ok_or(Error::NoEmitter(format))?;
@@ -315,7 +359,10 @@ pub fn run(reg: &Registry, input: Input, profile: Profile, format: OutputFormat)
         bytes_out,
         tokens_in,
         tokens_out,
+        blocks_in,
+        blocks_out,
         warnings: doc.warnings.clone(),
+        events,
     })
 }
 

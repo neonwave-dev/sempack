@@ -1,10 +1,10 @@
-//! Reducer plugins — the compression profiles.
+//! Reducer plugins â€” the compression profiles.
 //!
 //! P1 ships two. Both clean whitespace and drop empty blocks; `llm` additionally
 //! squeezes structure for token economy. The profile set widens later (`compact`
-//! soon, `debug` dev-flag, `rag` deferred) — each is just another [`Reducer`].
+//! soon, `debug` dev-flag, `rag` deferred) â€” each is just another [`Reducer`].
 
-use sempack_core::{Profile, Reducer, Result};
+use sempack_core::{Profile, Reducer, ReductionEvent, Result};
 use sempack_ir::{Block, DocumentIr};
 
 /// Collapse all runs of whitespace in `s` into single spaces.
@@ -15,28 +15,43 @@ fn collapse(s: &str) -> String {
 /// Collapse runs of whitespace in the prose blocks (paragraph / heading / quote /
 /// list items). Code blocks and structured blocks (table / record / unsupported) are
 /// left as-is, and container blocks are not recursed into.
-fn collapse_ws(doc: &mut DocumentIr) {
+/// Returns the number of blocks that were modified.
+fn collapse_ws(doc: &mut DocumentIr) -> usize {
+    let mut changed = 0usize;
     for b in &mut doc.blocks {
         match b {
             Block::Paragraph { text } | Block::Heading { text, .. } | Block::Quote { text } => {
-                *text = collapse(text);
+                let new = collapse(text);
+                if new != *text {
+                    *text = new;
+                    changed += 1;
+                }
             }
             Block::List { items, .. } => {
+                let before = items.len();
+                let mut item_changed = false;
                 for i in items.iter_mut() {
-                    *i = collapse(i);
+                    let new = collapse(i);
+                    if new != *i {
+                        *i = new;
+                        item_changed = true;
+                    }
                 }
-                // An item that was only whitespace collapses to "" — drop it so we
-                // never emit a blank bullet (`- `). A list emptied this way is then
-                // discarded by `drop_empty`.
                 items.retain(|i| !i.is_empty());
+                if item_changed || items.len() < before {
+                    changed += 1;
+                }
             }
             _ => {}
         }
     }
+    changed
 }
 
 /// Drop blocks that carry no content after cleanup.
-fn drop_empty(doc: &mut DocumentIr) {
+/// Returns the number of blocks dropped.
+fn drop_empty(doc: &mut DocumentIr) -> usize {
+    let before = doc.blocks.len();
     doc.blocks.retain(|b| match b {
         Block::Paragraph { text } | Block::Heading { text, .. } | Block::Quote { text } => {
             !text.trim().is_empty()
@@ -44,9 +59,10 @@ fn drop_empty(doc: &mut DocumentIr) {
         Block::List { items, .. } => !items.is_empty(),
         _ => true,
     });
+    before - doc.blocks.len()
 }
 
-/// `human` — light touch: tidy whitespace, drop empties, keep all structure.
+/// `human` â€” light touch: tidy whitespace, drop empties, keep all structure.
 pub struct HumanReducer;
 
 impl Reducer for HumanReducer {
@@ -56,14 +72,27 @@ impl Reducer for HumanReducer {
     fn profile(&self) -> Profile {
         Profile::Human
     }
-    fn reduce(&self, doc: &mut DocumentIr) -> Result<()> {
-        collapse_ws(doc);
-        drop_empty(doc);
-        Ok(())
+    fn reduce(&self, doc: &mut DocumentIr) -> Result<Vec<ReductionEvent>> {
+        let mut events = Vec::new();
+        let ws_changed = collapse_ws(doc);
+        if ws_changed > 0 {
+            events.push(ReductionEvent {
+                reducer: "human",
+                detail: format!("collapsed whitespace in {ws_changed} block(s)"),
+            });
+        }
+        let dropped = drop_empty(doc);
+        if dropped > 0 {
+            events.push(ReductionEvent {
+                reducer: "human",
+                detail: format!("dropped {dropped} empty block(s)"),
+            });
+        }
+        Ok(events)
     }
 }
 
-/// `llm` — human cleanup plus token-economy moves: merge adjacent paragraphs and
+/// `llm` â€” human cleanup plus token-economy moves: merge adjacent paragraphs and
 /// fold block quotes into paragraphs (the prose matters, the decoration does not).
 pub struct LlmReducer;
 
@@ -74,20 +103,44 @@ impl Reducer for LlmReducer {
     fn profile(&self) -> Profile {
         Profile::Llm
     }
-    fn reduce(&self, doc: &mut DocumentIr) -> Result<()> {
-        collapse_ws(doc);
-        drop_empty(doc);
+    fn reduce(&self, doc: &mut DocumentIr) -> Result<Vec<ReductionEvent>> {
+        let mut events = Vec::new();
 
-        // Quotes → paragraphs (drop the citation framing for the model).
+        let ws_changed = collapse_ws(doc);
+        if ws_changed > 0 {
+            events.push(ReductionEvent {
+                reducer: "llm",
+                detail: format!("collapsed whitespace in {ws_changed} block(s)"),
+            });
+        }
+
+        let dropped = drop_empty(doc);
+        if dropped > 0 {
+            events.push(ReductionEvent {
+                reducer: "llm",
+                detail: format!("dropped {dropped} empty block(s)"),
+            });
+        }
+
+        // Quotes -> paragraphs (drop the citation framing for the model).
+        let mut quotes_converted = 0usize;
         for b in &mut doc.blocks {
             if let Block::Quote { text } = b {
                 *b = Block::Paragraph {
                     text: std::mem::take(text),
                 };
+                quotes_converted += 1;
             }
+        }
+        if quotes_converted > 0 {
+            events.push(ReductionEvent {
+                reducer: "llm",
+                detail: format!("converted {quotes_converted} quote(s) to paragraph(s)"),
+            });
         }
 
         // Merge consecutive paragraphs into one.
+        let before_merge = doc.blocks.len();
         let mut merged: Vec<Block> = Vec::with_capacity(doc.blocks.len());
         for b in doc.blocks.drain(..) {
             if let (Some(Block::Paragraph { text: prev }), Block::Paragraph { text }) =
@@ -100,7 +153,15 @@ impl Reducer for LlmReducer {
             }
         }
         doc.blocks = merged;
-        Ok(())
+        let pairs_merged = before_merge - doc.blocks.len();
+        if pairs_merged > 0 {
+            events.push(ReductionEvent {
+                reducer: "llm",
+                detail: format!("merged {pairs_merged} consecutive paragraph pair(s)"),
+            });
+        }
+
+        Ok(events)
     }
 }
 
@@ -117,27 +178,58 @@ impl Reducer for CompactReducer {
     fn profile(&self) -> Profile {
         Profile::Compact
     }
-    fn reduce(&self, doc: &mut DocumentIr) -> Result<()> {
+    fn reduce(&self, doc: &mut DocumentIr) -> Result<Vec<ReductionEvent>> {
+        let mut events = Vec::new();
+
         // 1. Collapse whitespace runs in prose blocks.
-        collapse_ws(doc);
+        let ws_changed = collapse_ws(doc);
+        if ws_changed > 0 {
+            events.push(ReductionEvent {
+                reducer: "compact",
+                detail: format!("collapsed whitespace in {ws_changed} block(s)"),
+            });
+        }
 
         // 2. Drop Block::Quote entirely (aggressive -- the citation framing and
         //    the quoted prose both go; compact cares only about token savings).
+        let before_quotes = doc.blocks.len();
         doc.blocks.retain(|b| !matches!(b, Block::Quote { .. }));
+        let quotes_dropped = before_quotes - doc.blocks.len();
+        if quotes_dropped > 0 {
+            events.push(ReductionEvent {
+                reducer: "compact",
+                detail: format!("dropped {quotes_dropped} quote block(s)"),
+            });
+        }
 
         // 3. Drop empty blocks.
-        drop_empty(doc);
+        let dropped = drop_empty(doc);
+        if dropped > 0 {
+            events.push(ReductionEvent {
+                reducer: "compact",
+                detail: format!("dropped {dropped} empty block(s)"),
+            });
+        }
 
         // 4. Deduplicate paragraphs with identical text (keep first occurrence).
         // collapse_ws already trimmed all prose blocks, so no extra trim needed.
+        let before_dedup = doc.blocks.len();
         let mut seen: std::collections::HashSet<String> =
             std::collections::HashSet::with_capacity(doc.blocks.len());
         doc.blocks.retain(|b| match b {
             Block::Paragraph { text } => seen.insert(text.clone()),
             _ => true,
         });
+        let deduped = before_dedup - doc.blocks.len();
+        if deduped > 0 {
+            events.push(ReductionEvent {
+                reducer: "compact",
+                detail: format!("removed {deduped} duplicate paragraph(s)"),
+            });
+        }
 
         // 5. Merge consecutive paragraphs whose combined length is < 200 chars.
+        let before_merge = doc.blocks.len();
         let mut merged: Vec<Block> = Vec::with_capacity(doc.blocks.len());
         for b in doc.blocks.drain(..) {
             if let (Some(Block::Paragraph { text: prev }), Block::Paragraph { text: next }) =
@@ -152,8 +244,15 @@ impl Reducer for CompactReducer {
             merged.push(b);
         }
         doc.blocks = merged;
+        let pairs_merged = before_merge - doc.blocks.len();
+        if pairs_merged > 0 {
+            events.push(ReductionEvent {
+                reducer: "compact",
+                detail: format!("merged {pairs_merged} short consecutive paragraph(s)"),
+            });
+        }
 
-        Ok(())
+        Ok(events)
     }
 }
 
@@ -339,5 +438,25 @@ mod tests {
             compact_count * 100 <= human_count * 60,
             "compact ({compact_count} blocks) must be <=60% of human ({human_count} blocks)"
         );
+    }
+    #[test]
+    fn human_reducer_returns_events_on_change() {
+        let mut d = doc(vec![
+            Block::Paragraph {
+                text: "a  b".into(),
+            },
+            Block::Paragraph { text: "   ".into() },
+        ]);
+        let events = HumanReducer.reduce(&mut d).unwrap();
+        assert!(!events.is_empty(), "expected at least one reduction event");
+    }
+
+    #[test]
+    fn no_events_when_nothing_changes() {
+        let mut d = doc(vec![Block::Paragraph {
+            text: "already clean".into(),
+        }]);
+        let events = HumanReducer.reduce(&mut d).unwrap();
+        assert!(events.is_empty(), "expected no events when nothing changed");
     }
 }

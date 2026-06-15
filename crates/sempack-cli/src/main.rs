@@ -39,6 +39,15 @@ enum Commands {
         /// Print size/token metrics to stderr after completion.
         #[arg(long)]
         stats: bool,
+        /// Emit a machine-readable JSON object with compression metrics.
+        /// With -o: JSON -> stdout; without -o: JSON -> stderr (pipe-friendly).
+        /// Mutually exclusive with --stats (use one or the other).
+        #[arg(long, conflicts_with = "stats")]
+        stats_json: bool,
+        /// Dry-run: run the full pipeline but emit a human-readable report
+        /// instead of the compressed output. Exits 0 if pipeline would succeed.
+        #[arg(long)]
+        explain: bool,
     },
 
     /// Run detection + extraction only; emit raw DocumentIr blocks as JSONL to stdout.
@@ -126,7 +135,11 @@ fn run_command(cmd: Commands) -> Result<i32, Box<dyn std::error::Error>> {
             format,
             strict,
             stats,
-        } => cmd_compress(input, output, profile, format, strict, stats),
+            stats_json,
+            explain,
+        } => cmd_compress(
+            input, output, profile, format, strict, stats, stats_json, explain,
+        ),
         Commands::Extract {
             input,
             output,
@@ -139,6 +152,7 @@ fn run_command(cmd: Commands) -> Result<i32, Box<dyn std::error::Error>> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_compress(
     input: PathBuf,
     output: Option<PathBuf>,
@@ -146,6 +160,8 @@ fn cmd_compress(
     format: String,
     strict: bool,
     show_stats: bool,
+    stats_json: bool,
+    explain: bool,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     let profile: Profile = profile.parse().map_err(string_err)?;
     let format: OutputFormat = format.parse().map_err(string_err)?;
@@ -153,6 +169,7 @@ fn cmd_compress(
     let bytes = std::fs::read(&input)?;
     let path = input.to_string_lossy().to_string();
     let detected = detect(Some(&path), &bytes);
+    let source_format = detected.format.clone();
 
     let inp = Input {
         path: Some(path),
@@ -161,6 +178,27 @@ fn cmd_compress(
     };
     let out = run(&registry(), inp, profile, format)?;
 
+    if explain {
+        // --explain: dry-run mode — print a report, no output file written.
+        for ev in &out.events {
+            println!("[{}] {}", ev.reducer, ev.detail);
+        }
+        let savings = if out.tokens_in > 0 {
+            100.0 * (1.0 - out.tokens_out as f64 / out.tokens_in as f64)
+        } else {
+            0.0
+        };
+        println!(
+            "Total: {} -> {} tokens ({:.0}% reduction)",
+            out.tokens_in, out.tokens_out, savings
+        );
+        for w in &out.warnings {
+            eprintln!("sempack: warning [{}]: {}", w.code, w.message);
+        }
+        return Ok(warnings_exit_code(&out.warnings, strict));
+    }
+
+    // Normal output: write compressed content.
     match &output {
         Some(p) => std::fs::write(p, &out.content)?,
         None => print!("{}", out.content),
@@ -181,6 +219,36 @@ fn cmd_compress(
             ratio(out.tokens_out as f64, out.tokens_in as f64),
             out.warnings.len(),
         );
+    }
+
+    if stats_json {
+        let savings_pct = if out.bytes_in > 0 {
+            let saved = out.bytes_in.saturating_sub(out.bytes_out);
+            (saved as f64 / out.bytes_in as f64) * 100.0
+        } else {
+            0.0
+        };
+        // Round to 2 decimal places.
+        let savings_pct = (savings_pct * 100.0).round() / 100.0;
+        let json = serde_json::json!({
+            "tokens_in": out.tokens_in,
+            "tokens_out": out.tokens_out,
+            "bytes_in": out.bytes_in,
+            "bytes_out": out.bytes_out,
+            "savings_pct": savings_pct,
+            "blocks_in": out.blocks_in,
+            "blocks_out": out.blocks_out,
+            "profile": profile.as_str(),
+            "format": format.as_str(),
+            "source_format": source_format,
+        });
+        let json_str = serde_json::to_string(&json)?;
+        match &output {
+            // -o supplied: compressed content -> file, JSON -> stdout.
+            Some(_) => println!("{json_str}"),
+            // No -o: compressed content -> stdout (already printed), JSON -> stderr.
+            None => eprintln!("{json_str}"),
+        }
     }
 
     Ok(warnings_exit_code(&out.warnings, strict))
