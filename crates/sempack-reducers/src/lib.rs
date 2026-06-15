@@ -90,12 +90,27 @@ impl DiffReducer {
     }
 
     fn reduce_diff(&self, text: &str) -> String {
+        let trailing_newline = text.ends_with('\n');
         let lines: Vec<&str> = text.lines().collect();
         let mut file_sections: Vec<Vec<&str>> = Vec::new();
         let mut current: Vec<&str> = Vec::new();
 
+        // Use `diff --git` as the file boundary for git diffs; fall back to
+        // `--- ` for plain unified diffs.  Splitting on `--- ` alone is wrong
+        // for git diffs because each file starts with `diff --git ...` / `index ...`
+        // lines before the `---` header, so those prelude lines would land in the
+        // *previous* section and skew the file count.
+        let is_git_diff = lines.iter().any(|l| l.starts_with("diff --git "));
+        let is_section_start = |l: &str| {
+            if is_git_diff {
+                l.starts_with("diff --git ")
+            } else {
+                l.starts_with("--- ")
+            }
+        };
+
         for &line in &lines {
-            if line.starts_with("--- ") && !current.is_empty() {
+            if is_section_start(line) && !current.is_empty() {
                 file_sections.push(current);
                 current = Vec::new();
             }
@@ -126,6 +141,11 @@ impl DiffReducer {
                 out.push('\n');
             }
             out.push_str(&format!("[{omitted_files} files omitted]"));
+        }
+
+        // Preserve trailing newline from original text (text.lines() strips it).
+        if trailing_newline {
+            out.push('\n');
         }
 
         out
@@ -391,7 +411,9 @@ mod tests {
     #[test]
     fn human_collapses_and_drops() {
         let mut d = doc(vec![
-            Block::Paragraph { text: "a    b\n c".into() },
+            Block::Paragraph {
+                text: "a    b\n c".into(),
+            },
             Block::Paragraph { text: "   ".into() },
         ]);
         HumanReducer.reduce(&mut d).unwrap();
@@ -431,9 +453,15 @@ mod tests {
     #[test]
     fn compact_drops_quotes() {
         let mut d = doc(vec![
-            Block::Paragraph { text: "intro".into() },
-            Block::Quote { text: "someone said something".into() },
-            Block::Paragraph { text: "outro".into() },
+            Block::Paragraph {
+                text: "intro".into(),
+            },
+            Block::Quote {
+                text: "someone said something".into(),
+            },
+            Block::Paragraph {
+                text: "outro".into(),
+            },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
         assert!(
@@ -448,7 +476,9 @@ mod tests {
         let other = "y".repeat(150);
         let mut d = doc(vec![
             Block::Paragraph { text: para.clone() },
-            Block::Paragraph { text: other.clone() },
+            Block::Paragraph {
+                text: other.clone(),
+            },
             Block::Paragraph { text: para.clone() },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
@@ -458,8 +488,12 @@ mod tests {
     #[test]
     fn compact_merges_short_consecutive_paragraphs() {
         let mut d = doc(vec![
-            Block::Paragraph { text: "short one".into() },
-            Block::Paragraph { text: "short two".into() },
+            Block::Paragraph {
+                text: "short one".into(),
+            },
+            Block::Paragraph {
+                text: "short two".into(),
+            },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
         assert_eq!(d.blocks.len(), 1, "short paragraphs should be merged");
@@ -470,8 +504,12 @@ mod tests {
         let long_a = "x".repeat(150);
         let long_b = "y".repeat(150);
         let mut d = doc(vec![
-            Block::Paragraph { text: long_a.clone() },
-            Block::Paragraph { text: long_b.clone() },
+            Block::Paragraph {
+                text: long_a.clone(),
+            },
+            Block::Paragraph {
+                text: long_b.clone(),
+            },
         ]);
         CompactReducer.reduce(&mut d).unwrap();
         assert_eq!(d.blocks.len(), 2, "long paragraphs must not be merged");
@@ -480,16 +518,36 @@ mod tests {
     #[test]
     fn compact_achieves_block_count_reduction_vs_human() {
         let fixture = vec![
-            Block::Paragraph { text: "Introduction paragraph that sets the scene.".into() },
-            Block::Quote { text: "A famous quote about something interesting.".into() },
-            Block::Paragraph { text: "Short note.".into() },
-            Block::Paragraph { text: "Another short note.".into() },
-            Block::Paragraph { text: "Yet another short note.".into() },
-            Block::Quote { text: "Another quotation that adds bulk.".into() },
-            Block::Paragraph { text: "Duplicate paragraph appears here.".into() },
-            Block::Paragraph { text: "Non-duplicate content.".into() },
-            Block::Paragraph { text: "Duplicate paragraph appears here.".into() },
-            Block::Paragraph { text: "Concluding thoughts.".into() },
+            Block::Paragraph {
+                text: "Introduction paragraph that sets the scene.".into(),
+            },
+            Block::Quote {
+                text: "A famous quote about something interesting.".into(),
+            },
+            Block::Paragraph {
+                text: "Short note.".into(),
+            },
+            Block::Paragraph {
+                text: "Another short note.".into(),
+            },
+            Block::Paragraph {
+                text: "Yet another short note.".into(),
+            },
+            Block::Quote {
+                text: "Another quotation that adds bulk.".into(),
+            },
+            Block::Paragraph {
+                text: "Duplicate paragraph appears here.".into(),
+            },
+            Block::Paragraph {
+                text: "Non-duplicate content.".into(),
+            },
+            Block::Paragraph {
+                text: "Duplicate paragraph appears here.".into(),
+            },
+            Block::Paragraph {
+                text: "Concluding thoughts.".into(),
+            },
         ];
 
         let mut human_doc = doc(fixture.clone());
@@ -532,7 +590,11 @@ mod tests {
 
     #[test]
     fn diff_context_cap_fires() {
-        let config = DiffConfig { max_context: 2, max_hunks: 10, max_files: 20 };
+        let config = DiffConfig {
+            max_context: 2,
+            max_hunks: 10,
+            max_files: 20,
+        };
         // 5 context lines before change (cap=2 -> 3 omitted), 3 after (cap=2 -> 1 omitted).
         let diff = concat!(
             "--- a/foo.rs\n",
@@ -566,27 +628,52 @@ mod tests {
 
     #[test]
     fn diff_hunk_cap_fires() {
-        let config = DiffConfig { max_context: 2, max_hunks: 3, max_files: 20 };
+        let config = DiffConfig {
+            max_context: 2,
+            max_hunks: 3,
+            max_files: 20,
+        };
         let mut diff = String::from("--- a/big.rs\n+++ b/big.rs\n");
         for i in 0..5usize {
             let n = i * 10 + 1;
-            diff.push_str(&format!("@@ -{n},{n} +{n},{n} @@\n ctx\n-old{i}\n+new{i}\n"));
+            diff.push_str(&format!(
+                "@@ -{n},{n} +{n},{n} @@\n ctx\n-old{i}\n+new{i}\n"
+            ));
         }
         let result = DiffReducer::new(config).reduce_diff(&diff);
         for i in 0..3usize {
-            assert!(result.contains(&format!("-old{i}")), "kept hunk {i} deletion must be present");
-            assert!(result.contains(&format!("+new{i}")), "kept hunk {i} addition must be present");
+            assert!(
+                result.contains(&format!("-old{i}")),
+                "kept hunk {i} deletion must be present"
+            );
+            assert!(
+                result.contains(&format!("+new{i}")),
+                "kept hunk {i} addition must be present"
+            );
         }
         for i in 3..5usize {
-            assert!(!result.contains(&format!("-old{i}")), "omitted hunk {i} must be absent");
-            assert!(!result.contains(&format!("+new{i}")), "omitted hunk {i} must be absent");
+            assert!(
+                !result.contains(&format!("-old{i}")),
+                "omitted hunk {i} must be absent"
+            );
+            assert!(
+                !result.contains(&format!("+new{i}")),
+                "omitted hunk {i} must be absent"
+            );
         }
-        assert!(result.contains("[2 hunks omitted]"), "must emit hunk sentinel: {result}");
+        assert!(
+            result.contains("[2 hunks omitted]"),
+            "must emit hunk sentinel: {result}"
+        );
     }
 
     #[test]
     fn diff_file_cap_fires() {
-        let config = DiffConfig { max_context: 2, max_hunks: 10, max_files: 3 };
+        let config = DiffConfig {
+            max_context: 2,
+            max_hunks: 10,
+            max_files: 3,
+        };
         let mut diff = String::new();
         for i in 0..5usize {
             diff.push_str(&format!(
@@ -595,12 +682,21 @@ mod tests {
         }
         let result = DiffReducer::new(config).reduce_diff(&diff);
         for i in 0..3usize {
-            assert!(result.contains(&format!("--- a/file{i}.rs")), "file {i} must be present");
+            assert!(
+                result.contains(&format!("--- a/file{i}.rs")),
+                "file {i} must be present"
+            );
         }
         for i in 3..5usize {
-            assert!(!result.contains(&format!("--- a/file{i}.rs")), "file {i} must be omitted");
+            assert!(
+                !result.contains(&format!("--- a/file{i}.rs")),
+                "file {i} must be omitted"
+            );
         }
-        assert!(result.contains("[2 files omitted]"), "must emit file sentinel: {result}");
+        assert!(
+            result.contains("[2 files omitted]"),
+            "must emit file sentinel: {result}"
+        );
     }
 
     #[test]
@@ -646,9 +742,7 @@ mod tests {
 
     #[test]
     fn diff_1000_line_trimmed_preserves_changes() {
-        let mut diff = String::from(
-            "--- a/large.rs\n+++ b/large.rs\n@@ -1,900 +1,900 @@\n",
-        );
+        let mut diff = String::from("--- a/large.rs\n+++ b/large.rs\n@@ -1,900 +1,900 @@\n");
         for i in 0..100usize {
             diff.push_str(&format!(" context line {i}\n"));
         }
