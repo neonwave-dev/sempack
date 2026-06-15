@@ -4,7 +4,7 @@
 //! squeezes structure for token economy. The profile set widens later (`compact`
 //! soon, `debug` dev-flag, `rag` deferred) â€” each is just another [`Reducer`].
 
-use sempack_core::{Profile, ReductionEvent, Reducer, Result};
+use sempack_core::{Profile, Reducer, ReductionEvent, Result};
 use sempack_ir::{Block, DocumentIr};
 
 /// Collapse all runs of whitespace in `s` into single spaces.
@@ -29,11 +29,16 @@ fn collapse_ws(doc: &mut DocumentIr) -> usize {
             }
             Block::List { items, .. } => {
                 let before = items.len();
+                let mut item_changed = false;
                 for i in items.iter_mut() {
-                    *i = collapse(i);
+                    let new = collapse(i);
+                    if new != *i {
+                        *i = new;
+                        item_changed = true;
+                    }
                 }
                 items.retain(|i| !i.is_empty());
-                if items.len() < before {
+                if item_changed || items.len() < before {
                     changed += 1;
                 }
             }
@@ -437,7 +442,9 @@ mod tests {
     #[test]
     fn human_reducer_returns_events_on_change() {
         let mut d = doc(vec![
-            Block::Paragraph { text: "a  b".into() },
+            Block::Paragraph {
+                text: "a  b".into(),
+            },
             Block::Paragraph { text: "   ".into() },
         ]);
         let events = HumanReducer.reduce(&mut d).unwrap();
@@ -452,5 +459,4 @@ mod tests {
         let events = HumanReducer.reduce(&mut d).unwrap();
         assert!(events.is_empty(), "expected no events when nothing changed");
     }
-
 }

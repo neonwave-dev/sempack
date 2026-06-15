@@ -41,7 +41,8 @@ enum Commands {
         stats: bool,
         /// Emit a machine-readable JSON object with compression metrics.
         /// With -o: JSON -> stdout; without -o: JSON -> stderr (pipe-friendly).
-        #[arg(long)]
+        /// Mutually exclusive with --stats (use one or the other).
+        #[arg(long, conflicts_with = "stats")]
         stats_json: bool,
         /// Dry-run: run the full pipeline but emit a human-readable report
         /// instead of the compressed output. Exits 0 if pipeline would succeed.
@@ -136,7 +137,9 @@ fn run_command(cmd: Commands) -> Result<i32, Box<dyn std::error::Error>> {
             stats,
             stats_json,
             explain,
-        } => cmd_compress(input, output, profile, format, strict, stats, stats_json, explain),
+        } => cmd_compress(
+            input, output, profile, format, strict, stats, stats_json, explain,
+        ),
         Commands::Extract {
             input,
             output,
@@ -149,6 +152,7 @@ fn run_command(cmd: Commands) -> Result<i32, Box<dyn std::error::Error>> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_compress(
     input: PathBuf,
     output: Option<PathBuf>,
